@@ -1,0 +1,7 @@
+*.pyc
+runs
+coco
+FMS_data
+*.jpg
+*.cache
+weights/*.pt
