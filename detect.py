@@ -113,53 +113,53 @@ def detect(save_img=False):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
 
-                # # Print results
-                # for c in det[:, -1].unique():
-                    # n = (det[:, -1] == c).sum()  # detections per class
-                    # s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
+                # Print results
+                for c in det[:, -1].unique():
+                    n = (det[:, -1] == c).sum()  # detections per class
+                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
 
-                # # Write results
-                # for *xyxy, conf, cls in reversed(det):
-                    # if save_txt:  # Write to file
-                        # xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        # line = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
-                        # with open(txt_path + '.txt', 'a') as f:
-                            # f.write(('%g ' * len(line)).rstrip() % line + '\n')
+                # Write results
+                for *xyxy, conf, cls in reversed(det):
+                    if save_txt:  # Write to file
+                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                        line = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
+                        with open(txt_path + '.txt', 'a') as f:
+                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
-                    # if save_img or view_img:  # Add bbox to image
-                        # label = f'{names[int(cls)]} {conf:.2f}'
-                        # plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=1)
+                    if save_img or view_img:  # Add bbox to image
+                        label = f'{names[int(cls)]} {conf:.2f}'
+                        plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=1)
 
-            # # Print time (inference + NMS)
-            # print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
+            # Print time (inference + NMS)
+            print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
 
-            # # Stream results
-            # if view_img:
-                # cv2.imshow(str(p), im0)
-                # cv2.waitKey(1)  # 1 millisecond
+            # Stream results
+            if view_img:
+                cv2.imshow(str(p), im0)
+                cv2.waitKey(1)  # 1 millisecond
 
-            # # Save results (image with detections)
-            # if save_img:
-                # if dataset.mode == 'image':
-                    # cv2.imwrite(save_path, im0)
-                    # print(f" The image with the result is saved in: {save_path}")
-                # else:  # 'video' or 'stream'
-                    # if vid_path != save_path:  # new video
-                        # vid_path = save_path
-                        # if isinstance(vid_writer, cv2.VideoWriter):
-                            # vid_writer.release()  # release previous video writer
-                        # if vid_cap:  # video
-                            # fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            # w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            # h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        # else:  # stream
-                            # fps, w, h = 30, im0.shape[1], im0.shape[0]
-                            # save_path += '.mp4'
-                        # vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                    # vid_writer.write(im0)
+            # Save results (image with detections)
+            if save_img:
+                if dataset.mode == 'image':
+                    cv2.imwrite(save_path, im0)
+                    print(f" The image with the result is saved in: {save_path}")
+                else:  # 'video' or 'stream'
+                    if vid_path != save_path:  # new video
+                        vid_path = save_path
+                        if isinstance(vid_writer, cv2.VideoWriter):
+                            vid_writer.release()  # release previous video writer
+                        if vid_cap:  # video
+                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        else:  # stream
+                            fps, w, h = 30, im0.shape[1], im0.shape[0]
+                            save_path += '.mp4'
+                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    vid_writer.write(im0)
 
-    # if save_txt or save_img:
-        # s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
+    if save_txt or save_img:
+        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         # #print(f"Results saved to {save_dir}{s}")
 
     print(f'Done. ({time.time() - t0:.3f}s)', ccc)
