@@ -17,20 +17,31 @@ import cv2
 # from .trt_infer_with_torchstream import allocate_buffers, do_inference
 
 class YoloDet():
-    def __init__(self, trt_path, imgsz, device):
+    def __init__(self, trt_path=None, imgsz=320, device='cuda', data_type="coco"):
         """
         Args:
             imgsz: int，输入图像默认为方形，例如，320表示(320,320)
         """
         self.conf = 0.3
-        self.n_classes = 1
-        self.class_names = ['person']
+        if data_type == "fms":
+            self.n_classes = 1
+            self.class_names = ['person']
+            model_tails = 'poseReg_light/YoloDet/yolov7-tiny-fms.trt'
+        else:
+            self.n_classes = 80
+            self.class_names = ['person'] * 80
+            model_tails = 'poseReg_light/YoloDet/yolov7-tiny-coco.trt'
+        
         self.imgsz = imgsz
         self.device = device
+        if not trt_path:
+            abs_path = os.path.abspath('.')
+            self.trt_path = os.path.join(abs_path, model_tails)
+
         # detect中pad的做法，320,240的输入默认是被pad成320,320？ # 答：pad成320,256的,但后期会更改
         # self.pad_board = torch.ones(1, self.imgsz, self.imgsz,3, dtype=torch.float16) * 114.0
         # self.pad_board[:] = 114.0 # 灰色处理
-        self.init_trt_infer_env(trt_path)
+        self.init_trt_infer_env(self.trt_path)
         pass
 
     def torch_device_from_trt(self, device):
@@ -155,6 +166,23 @@ class YoloDet():
         # # print(reg_out.size())
         # return None, reg_out_new, None
 
+    def jetson_run(self, frame, conf=0.5):
+        frame_ready = self.preprocess(frame)
+        det_out = self.do_inference(frame_ready)
+        data = det_out.cpu().numpy()
+
+        predictions = np.reshape(data, (1, -1, int(5+self.n_classes)))[0]
+        dets = self.postprocess(predictions,ratio=1.0)
+
+        # if dets is not None:
+            # final_boxes, final_scores, final_cls_inds = dets[:,:4], dets[:, 4], dets[:, 5]
+            # origin_img = vis(frame, final_boxes, final_scores, final_cls_inds,
+                             # conf=conf, class_names=self.class_names)
+            # self.save_img(origin_img)
+        # return origin_img
+        return dets
+        pass
+
     def run(self, frame, conf=0.5, end2end=False):
         """
         Args:
@@ -168,13 +196,14 @@ class YoloDet():
         # print(det_out, type(det_out), det_out.size())
 
         data = det_out.cpu().numpy()
-
+        # print("output of inference",data.shape) # (1, 1, 6300, 6)  or (1, 1, 6300, 85)
         if end2end:
             num, final_boxes, final_scores, final_cls_inds = data
             final_boxes = np.reshape(final_boxes/ratio, (-1, 4))
             dets = np.concatenate([final_boxes[:num[0]], np.array(final_scores)[:num[0]].reshape(-1, 1), np.array(final_cls_inds)[:num[0]].reshape(-1, 1)], axis=-1)
         else:
             # print(self.n_classes)
+            # print("not end2end, and self.n_classes", self.n_classes)
             predictions = np.reshape(data, (1, -1, int(5+self.n_classes)))[0]
             dets = self.postprocess(predictions,ratio=1.0)
 
@@ -252,8 +281,8 @@ class YoloDet():
             if valid_score_mask.sum() == 0:
                 continue
             else:
-                valid_scores = cls_scores[valid_score_mask]
-                valid_boxes = boxes[valid_score_mask]
+                valid_scores = cls_scores[valid_score_mask] # (num_bboxes,)
+                valid_boxes = boxes[valid_score_mask] # (num_bboxes,4)
                 keep = self.nms(valid_boxes, valid_scores, nms_thr)
                 if len(keep) > 0:
                     cls_inds = np.ones((len(keep), 1)) * cls_ind
@@ -266,16 +295,49 @@ class YoloDet():
         return np.concatenate(final_dets, 0)
 
 
+    def multiclass_max_nms(self, boxes, scores, nms_thr, score_thr):
+        """Multiclass NMS implemented in Numpy"""
+        final_dets = []
+        # num_classes = scores.shape[1]
+        num_classes = 1 # 这里只识别person
+        for cls_ind in range(num_classes):
+            cls_scores = scores[:, cls_ind]
+            valid_score_mask = cls_scores > score_thr
+            if valid_score_mask.sum() == 0:
+                continue
+            else:
+                valid_scores = cls_scores[valid_score_mask] # (num_bboxes,)
+                valid_boxes = boxes[valid_score_mask] # (num_bboxes,4)
+                keep = np.argmax(valid_scores)
+                keep = keep if isinstance(keep, np.int) else [keep]
+                # keep = self.nms(valid_boxes, valid_scores, nms_thr)
+                if len(keep) > 0:
+                    # cls_inds = np.ones((len(keep), 1)) * cls_ind
+                    # dets = np.concatenate(
+                        # [valid_boxes[keep], valid_scores[keep, None], cls_inds], 1
+                    # )
+                    dets = [valid_boxes[keep], valid_scores[keep, None]]
+                    final_dets.append(dets)
+        if len(final_dets) == 0:
+            return None, None
+        # return np.concatenate(final_dets, 0)
+        return final_dets[0]
+
     def postprocess(self, predictions, ratio):
+        # print("predications.shape:", predictions.shape)
         boxes = predictions[:, :4]
+        # print(boxes.shape) # (6300, 4)
         scores = predictions[:, 4:5] * predictions[:, 5:]
+        # print(scores.shape) # (6300, 1) or (6300, 80)
         boxes_xyxy = np.ones_like(boxes)
         boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2.
         boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2 - 40.
         boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2.
         boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2 - 40.
         boxes_xyxy /= ratio
-        dets = self.multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.1)
+        # dets = self.multiclass_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.1)
+        dets = self.multiclass_max_nms(boxes_xyxy, scores, nms_thr=0.45, score_thr=0.1)
+        # print(dets)
         return dets
 
         pass
@@ -417,7 +479,8 @@ def try_yolo_trt():
 
 if __name__ == "__main__":
     device = 'cuda'
-    trt_path = './yolov7-tiny-fms.trt'
+    # trt_path = './yolov7-tiny-fms.trt'
+    trt_path = './yolov7-tiny-coco.trt'
     imgsz = 320
     ydh = YoloDet(trt_path, imgsz, device)
     

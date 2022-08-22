@@ -27,12 +27,12 @@ if __name__ == '__main__':
     args = parser.parse_args()
     print(args)
 
-    pred = Predictor(engine_path=args.engine, imgsz=(320,320), datatype="fms")
+    pred = Predictor(engine_path=args.engine, imgsz=(320,320), datatype="coco")
     pred.get_fps()
     img_path = args.image
     video = args.video
     if img_path:
-      origin_img = pred.inference(img_path, conf=0.1, end2end=args.end2end)
+      origin_img = pred.inference(img_path, conf=0.45, end2end=args.end2end)
 
       cv2.imwrite("%s" %args.output , origin_img)
     if video:
