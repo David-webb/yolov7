@@ -102,15 +102,23 @@ class IDetect(nn.Module):
     concat = False
 
     def __init__(self, nc=80, anchors=(), ch=()):  # detection layer
+        """
+            nc 是classes num
+            anchors: 是先验框的横纵比, 二维数组，以tiny为例:
+              - [10,13, 16,30, 33,23]  # P3/8
+              - [30,61, 62,45, 59,119]  # P4/16
+              - [116,90, 156,198, 373,326]  # P5/32
+            ch：是多个特征图的channel构成的list
+        """
         super(IDetect, self).__init__()
         self.nc = nc  # number of classes
         self.no = nc + 5  # number of outputs per anchor
-        self.nl = len(anchors)  # number of detection layers
-        self.na = len(anchors[0]) // 2  # number of anchors
+        self.nl = len(anchors)  # number of detection layers # 3
+        self.na = len(anchors[0]) // 2  # number of anchors # 3 
         self.grid = [torch.zeros(1)] * self.nl  # init grid
-        a = torch.tensor(anchors).float().view(self.nl, -1, 2)
+        a = torch.tensor(anchors).float().view(self.nl, -1, 2) # (3, 3, 2)
         self.register_buffer('anchors', a)  # shape(nl,na,2)
-        self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
+        self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl, 1,na,1,1,2)
         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
         
         self.ia = nn.ModuleList(ImplicitA(x) for x in ch)
@@ -121,6 +129,7 @@ class IDetect(nn.Module):
         z = []  # inference output
         self.training |= self.export
         for i in range(self.nl):
+            # print("head头部，第%d个fea的size:" % i, x[i].size())
             x[i] = self.m[i](self.ia[i](x[i]))  # conv
             x[i] = self.im[i](x[i])
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
@@ -582,7 +591,7 @@ class Model(nn.Module):
     def forward(self, x, augment=False, profile=False):
         if augment: # 默认为False，不执行
             img_size = x.shape[-2:]  # height, width
-            s = [1, 0.83, 0.67]  # scales
+            s = [1, 0.83, 0.67]  # scales # 1:1, 5:6, 2:3
             f = [None, 3, None]  # flips (2-ud, 3-lr)
             y = []  # outputs
             for si, fi in zip(s, f):
