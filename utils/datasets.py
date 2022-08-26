@@ -37,6 +37,7 @@ vid_formats = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # accep
 logger = logging.getLogger(__name__)
 
 # Get orientation exif tag
+# 该代码遍历ExifTags.Tags字典（Image对象保存的图片信息），遇到“Orientation"时终止遍历，此时全局变量orientation保存的数值就是"Orientation"
 for orientation in ExifTags.TAGS.keys():
     if ExifTags.TAGS[orientation] == 'Orientation':
         break
@@ -48,9 +49,35 @@ def get_hash(files):
 
 
 def exif_size(img):
+    """如果图片是被旋转过的，将其旋转回去，再确定其h和w
+        参考：
+        # https://www.google.com.hk/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwjWgMTYtuH5AhWOEIgKHSNKD2wQFnoECAQQAQ&url=https%3A%2F%2Fnicehuster.github.io%2F2020%2F08%2F06%2FPILrotate%2F&usg=AOvVaw2OelIyvOO8oXejwsSrBBvv
+        电子设备在拍摄照片时，如手机、相机等，由于手持朝向的不同，拍摄的照片可能会出现旋转 0、90、180、270 角度的情况，其 EXIF 信息中会保留相应的方位信息.有些情况下，电脑上打开显示照片是正常的，但在用 PIL 或 OpenCV 读取图片后，图片出现旋转，且读取的图片尺寸也可能与直接在电脑上打开的尺寸不同的问题.
+        对此，需要在读取图片时，同时解析图片的 EXIF 中的方位信息，将图片转正，再进行后续的其他操作.实例如下：
+        from PIL import Image, ExifTags
+	def IsRotate(img): # 返回false表示存在旋转情况
+	    try:
+		for orientation in ExifTags.TAGS.keys() :
+		    if ExifTags.TAGS[orientation]=='Orientation' :
+			img2 = img.rotate(0, expand = True)
+			break
+		exif=dict(img._getexif().items())
+		if  exif[orientation] == 3 :
+		    img2=img.rotate(180, expand = True)
+		elif exif[orientation] == 6 :
+		    img2=img.rotate(270, expand = True)
+		elif exif[orientation] == 8 :
+		    img2=img.rotate(90, expand = True)
+		    
+		return img.size == img2.size
+	    except:
+		return True 
+    """
     # Returns exif-corrected PIL size
     s = img.size  # (width, height)
     try:
+        # PIL包下的Image对象的getexif函数是用来获取img的信息，详情查看
+        
         rotation = dict(img._getexif().items())[orientation]
         if rotation == 6:  # rotation 270
             s = (s[1], s[0])
@@ -359,7 +386,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
-        self.mosaic_border = [-img_size // 2, -img_size // 2]
+        self.mosaic_border = [-img_size // 2, -img_size // 2] # (-160, -160)
         self.stride = stride
         self.path = path        
         #self.albumentations = Albumentations() if augment else None
@@ -367,33 +394,57 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         try:
             f = []  # image files
             for p in path if isinstance(path, list) else [path]:
-                p = Path(p)  # os-agnostic
+                p = Path(p)  # os-agnostic # pathlib包中的工具
                 if p.is_dir():  # dir
                     f += glob.glob(str(p / '**' / '*.*'), recursive=True)
                     # f = list(p.rglob('**/*.*'))  # pathlib
                 elif p.is_file():  # file
                     with open(p, 'r') as t:
                         t = t.read().strip().splitlines()
-                        parent = str(p.parent) + os.sep
+                        parent = str(p.parent) + os.sep # os.sep表示"/"
                         f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
                         # f += [p.parent / x.lstrip(os.sep) for x in t]  # local to global path (pathlib)
                 else:
                     raise Exception(f'{prefix}{p} does not exist')
+            # 对f中的img_path排序，结果存储在self.img_files
             self.img_files = sorted([x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
+            # print("*********** img的总数为: %d ************" % len(self.img_files))
             # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in img_formats])  # pathlib
             assert self.img_files, f'{prefix}No images found'
         except Exception as e:
             raise Exception(f'{prefix}Error loading data from {path}: {e}\nSee {help_url}')
 
         # Check cache
-        self.label_files = img2label_paths(self.img_files)  # labels
-        cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache')  # cached labels
-        if cache_path.is_file():
-            cache, exists = torch.load(cache_path), True  # load
-            #if cache['hash'] != get_hash(self.label_files + self.img_files) or 'version' not in cache:  # changed
-            #    cache, exists = self.cache_labels(cache_path, prefix), False  # re-cache
-        else:
-            cache, exists = self.cache_labels(cache_path, prefix), False  # cache
+        self.label_files = img2label_paths(self.img_files)  # labels # 根据image的路径确定各自label文件路径
+        # ========== 原始代码：作者默认这里只有一个dataset =================
+        # cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache')  # cached labels
+        # if cache_path.is_file():
+            # cache, exists = torch.load(cache_path), True  # load
+            # #if cache['hash'] != get_hash(self.label_files + self.img_files) or 'version' not in cache:  # changed
+            # #    cache, exists = self.cache_labels(cache_path, prefix), False  # re-cache
+        # else:
+            # cache, exists = self.cache_labels(cache_path, prefix), False  # cache
+
+        # ========== 修改：改成支持多个dataset的cache_path =================
+        cache_path_l = []
+        for p in path if isinstance(path, list) else [path]:
+            p = Path(p)  # os-agnostic # pathlib包中的工具
+            cache_path_l.append((p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache'))  # cached labels
+        print("cache_path is：", cache_path_l)
+
+        cache_buffer_l = []
+        for cache_path in cache_path_l:
+            if cache_path.is_file():
+                cache, exists = torch.load(cache_path), True  # load
+                #if cache['hash'] != get_hash(self.label_files + self.img_files) or 'version' not in cache:  # changed
+                #    cache, exists = self.cache_labels(cache_path, prefix), False  # re-cache
+            else:
+                cache, exists = self.cache_labels(cache_path, prefix), False  # cache
+            cache_buffer_l.append((cache, exists,))
+
+        
+        cache, exists = self.cache_merge(cache_buffer_l)
+        # =========================== 修改结束 ==============================
 
         # Display cache
         nf, nm, ne, nc, n = cache.pop('results')  # found, missing, empty, corrupted, total
@@ -447,7 +498,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
-        if cache_images:
+        if cache_images: # 默认是False
             if cache_images == 'disk':
                 self.im_cache_dir = Path(Path(self.img_files[0]).parent.as_posix() + '_npy')
                 self.img_npy = [self.im_cache_dir / Path(f).with_suffix('.npy').name for f in self.img_files]
@@ -477,7 +528,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 # verify images
                 im = Image.open(im_file)
                 im.verify()  # PIL verify
-                shape = exif_size(im)  # image size
+                shape = exif_size(im)  # image size # 如果图片被旋转过，将其转回再确定shape
                 segments = []  # instance segments
                 assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
                 assert im.format.lower() in img_formats, f'invalid image format {im.format}'
@@ -490,7 +541,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                         if any([len(x) > 8 for x in l]):  # is segment
                             classes = np.array([x[0] for x in l], dtype=np.float32)
                             segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in l]  # (cls, xy1...)
-                            l = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
+                            l = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh) # segments2boxes 功能是根据seg中所有node的最小最大的横纵坐标确定bbox
                         l = np.array(l, dtype=np.float32)
                     if len(l):
                         assert l.shape[1] == 5, 'labels require 5 columns each'
@@ -522,6 +573,44 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         logging.info(f'{prefix}New cache created: {path}')
         return x
 
+    def temp_show(self, cache):
+        print("============= 开始一个cache的输出 ==============")
+        c = 0
+        for img_fp in cache.keys():
+            print(img_fp)
+            c+=1
+            if c> 6:
+                break
+        pass
+
+    def cache_merge(self, cache_fp_list):
+        """合并多个cache对象(这里的cache对象是指self.cache_labels的返回值)
+        Args:
+            cache_fp_list；cache对象列表
+        """
+        cache_x = {}
+        exists_x = True
+
+        hash_sum = 0 
+        nm, nf, ne, nc, ic = 0, 0, 0, 0, 0  # number missing, found, empty, duplicate
+        # print("****************** start merging dataset cache buffers......")
+        for cache, exists in cache_fp_list:
+            hash_sum += cache['hash']
+            nm_, nf_, ne_, nc_, ic_= cache["results"]
+            nm, nf, ne, nc, ic = nm+nm_, nf+nf_, ne+ne_, nc+nc_, ic+ic_ # number missing, found, empty, duplicate
+            cache.pop('hash')
+            cache.pop('results')
+            cache.pop('version')
+            # self.temp_show(cache)
+            cache_x.update(cache)
+            exists_x = exists_x and exists
+
+        cache_x['hash'] = hash_sum
+        cache_x['results'] = nm, nf, ne, nc, ic
+        cache_x['version'] = 0.1
+        return cache_x, exists_x
+        pass
+
     def __len__(self):
         return len(self.img_files)
 
@@ -535,8 +624,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         index = self.indices[index]  # linear, shuffled, or image_weights
 
         hyp = self.hyp
-        mosaic = self.mosaic and random.random() < hyp['mosaic']
-        if mosaic:
+        mosaic = self.mosaic and random.random() < hyp['mosaic'] # hyp['mosaic']默认是1 # self.mosaic是True
+        if mosaic: # 这里是True
             # Load mosaic
             if random.random() < 0.8:
                 img, labels = load_mosaic(self, index)
@@ -545,7 +634,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             shapes = None
 
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
-            if random.random() < hyp['mixup']:
+            if random.random() < hyp['mixup']: # hyp['mixup']=0.05
                 if random.random() < 0.8:
                     img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1))
                 else:
@@ -567,7 +656,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             if labels.size:  # normalized xywh to pixel xyxy format
                 labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
 
-        if self.augment:
+        if self.augment: # 这里是True
             # Augment imagespace
             if not mosaic:
                 img, labels = random_perspective(img, labels,
@@ -587,7 +676,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # if random.random() < 0.9:
             #     labels = cutout(img, labels)
             
-            if random.random() < hyp['paste_in']:
+            if random.random() < hyp['paste_in']: # hyp['paste_in']=0.05
                 sample_labels, sample_images, sample_masks = [], [], [] 
                 while len(sample_labels) < 30:
                     sample_labels_, sample_images_, sample_masks_ = load_samples(self, random.randint(0, len(self.labels) - 1))
@@ -607,13 +696,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         if self.augment:
             # flip up-down
-            if random.random() < hyp['flipud']:
+            if random.random() < hyp['flipud']: # hyp['flipud']=0.0
                 img = np.flipud(img)
                 if nL:
                     labels[:, 2] = 1 - labels[:, 2]
 
             # flip left-right
-            if random.random() < hyp['fliplr']:
+            if random.random() < hyp['fliplr']: # hyp['fliplr']=0.5
                 img = np.fliplr(img)
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
@@ -623,7 +712,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             labels_out[:, 1:] = torch.from_numpy(labels)
 
         # Convert
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, and hwc->chw, to 3x416x416
         img = np.ascontiguousarray(img)
 
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
@@ -666,7 +755,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 def load_image(self, index):
     # loads 1 image from dataset, returns img, original hw, resized hw
     img = self.imgs[index]
-    if img is None:  # not cached
+    if img is None:  # not cached # 默认是not cached, 毕竟图片太多，吃内存
         path = self.img_files[index]
         img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
@@ -675,7 +764,8 @@ def load_image(self, index):
         if r != 1:  # always resize down, only resize up if training with augmentation
             interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
-        return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
+        # 对于FMS，预设的img_sz为(320,320), 故r=1, 从而(h0,w0) == img.shape[:2] == (240,320)
+        return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized 
     else:
         return self.imgs[index], self.img_hw0[index], self.img_hw[index]  # img, hw_original, hw_resized
 
@@ -709,36 +799,46 @@ def load_mosaic(self, index):
     # loads images in a 4-mosaic
 
     labels4, segments4 = [], []
-    s = self.img_size
-    yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
+    s = self.img_size # 对于FMS (320,320)
+    # self.mosaic_border = [-img_size // 2, -img_size // 2] # (-160, -160)
+    yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y # 均匀分布选择mosaic的中心点 均匀分布的范围uniform(160, 480)，即中心点的横纵坐标值都在（160,480）之间随机选择
     indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
     for i, index in enumerate(indices):
         # Load image
-        img, _, (h, w) = load_image(self, index)
+        img, _, (h, w) = load_image(self, index) # FMS: h = 240, w = 320
 
         # place img in img4
         if i == 0:  # top left
-            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles # 黑板
+            # top-left图片坑位：blackboard的随机中心点为bbox右下角点,往左上延伸出img尺寸的区域(溢出黑板的clip)
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+            # top-left填坑：图片的右下角点和黑板随机中心点对齐，按照坑的尺寸从右下角点向左上方向截取坑位尺寸图像
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
+            # top-right图片坑位：blackboard的随机中心点为bbox左下角点,往右上延伸出img尺寸的区域(溢出黑板的clip) 
             x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+            # top-right填坑：图片的左下角点和黑板随机中心点对齐，按照坑的尺寸从左下角点向右上方向截取坑位尺寸图像
             x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
         elif i == 2:  # bottom left
+            # bottom-left图片坑位：blackboard的随机中心点为bbox右上角点,往左下延伸出img尺寸的区域(溢出黑板的clip) 
             x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+            # bottom-left填坑：图片的右上角点和黑板随机中心点对齐，按照坑的尺寸从右上角点向左下方向截取坑位尺寸图像
             x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
         elif i == 3:  # bottom right
+
+            # bottom-left图片坑位：blackboard的随机中心点为bbox左上角点,往右下延伸出img尺寸的区域(溢出黑板的clip) 
             x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+            # bottom-left填坑：图片的左上角点和黑板随机中心点对齐，按照坑的尺寸从左上角点向右下方向截取坑位尺寸图像
             x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
         img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-        padw = x1a - x1b
-        padh = y1a - y1b
+        padw = x1a - x1b # 看做坑位和img图片之间的位置映射:img上任意一点的横坐标tmpx - x1b + x1a就能得到在黑板上的横坐标
+        padh = y1a - y1b # 原理同上，针对纵坐标映射
 
         # Labels
         labels, segments = self.labels[index].copy(), self.segments[index].copy()
         if labels.size:
-            labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padw, padh)  # normalized xywh to pixel xyxy format
+            labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padw, padh)  # normalized xywh to pixel xyxy format # 这里的坐标已经转换到黑板上了
             segments = [xyn2xy(x, w, h, padw, padh) for x in segments]
         labels4.append(labels)
         segments4.extend(segments)
@@ -752,7 +852,7 @@ def load_mosaic(self, index):
     # Augment
     #img4, labels4, segments4 = remove_background(img4, labels4, segments4)
     #sample_segments(img4, labels4, segments4, probability=self.hyp['copy_paste'])
-    img4, labels4, segments4 = copy_paste(img4, labels4, segments4, probability=self.hyp['copy_paste'])
+    img4, labels4, segments4 = copy_paste(img4, labels4, segments4, probability=self.hyp['copy_paste']) # hyp['copy_paste']默认是0
     img4, labels4 = random_perspective(img4, labels4, segments4,
                                        degrees=self.hyp['degrees'],
                                        translate=self.hyp['translate'],
@@ -1019,20 +1119,31 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # targets = [cls, xyxy]
 
-    height = img.shape[0] + border[0] * 2  # shape(h,w,c)
-    width = img.shape[1] + border[1] * 2
+    # FMS: border=(-160, -160)
+    # img.shape = (640,640,3)
+    height = img.shape[0] + border[0] * 2  # shape(h,w,c) # 320
+    width = img.shape[1] + border[1] * 2 # (320)
 
     # Center
+    """
+        C = [
+            [1, 0, -320],
+            [0, 1, -320],
+            [0, 0,   1 ]
+        ]
+    """
     C = np.eye(3)
-    C[0, 2] = -img.shape[1] / 2  # x translation (pixels)
+    C[0, 2] = -img.shape[1] / 2  # x translation (pixels) # 
     C[1, 2] = -img.shape[0] / 2  # y translation (pixels)
 
-    # Perspective
-    P = np.eye(3)
+    # Perspective # 透视变换
+    P = np.eye(3) # 3阶单位矩阵
+    # yolov7-tiny设置的perspective先验值是0，所以这里的P没有改变
     P[2, 0] = random.uniform(-perspective, perspective)  # x perspective (about y)
     P[2, 1] = random.uniform(-perspective, perspective)  # y perspective (about x)
 
     # Rotation and Scale
+    # yolov7-tiny设置的degrees先验值是0
     R = np.eye(3)
     a = random.uniform(-degrees, degrees)
     # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
@@ -1041,22 +1152,24 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 
     # Shear
+    # yolov7-tiny设置的shear先验值是0
     S = np.eye(3)
     S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear (deg)
     S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
 
     # Translation
+    # yolov7-tiny设置的translate先验值是0.1
     T = np.eye(3)
     T[0, 2] = random.uniform(0.5 - translate, 0.5 + translate) * width  # x translation (pixels)
     T[1, 2] = random.uniform(0.5 - translate, 0.5 + translate) * height  # y translation (pixels)
 
     # Combined rotation matrix
-    M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
+    M = T @ S @ R @ P @ C # order of operations (right to left) is IMPORTANT # 这里@符号表示矩阵相乘
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
-        if perspective:
-            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+        if perspective: # 
+            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114)) # 透视变换函数，可保持直线不变形，但是平行线可能不再平行
         else:  # affine
-            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114)) # 放射变换函数，可实现旋转，平移，缩放；变换后的平行线依旧平行
 
     # Visualize
     # import matplotlib.pyplot as plt

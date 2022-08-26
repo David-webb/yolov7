@@ -107,6 +107,8 @@ def train(hyp, opt, device, tb_writer=None):
         model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
 
     # ============================= 数据集检查 ======================================================
+    # print("train_path的数值是:", data_dict["train"], "其类型是:", type(data_dict["train"]))
+    # print("val_path的数值是:", data_dict["val"], "其类型是:", type(data_dict["val"]))
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # Download dataset if not found locally(运行原理和attempt_Download一样)
     train_path = data_dict['train'] 
@@ -246,7 +248,7 @@ def train(hyp, opt, device, tb_writer=None):
     # Image sizes
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
     nl = model.model[-1].nl  # number of detection layers (used for scaling hyp['obj'])
-    print("opt获得的img_size:",opt.img_size)
+    # print("opt获得的img_size:",opt.img_size)
     imgsz, imgsz_test = [check_img_size(x, gs) for x in opt.img_size]  # verify imgsz are gs-multiples
 
     # DP mode
@@ -265,6 +267,7 @@ def train(hyp, opt, device, tb_writer=None):
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
+    print("训练数据的batch总数:", nb)
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
 
     # Process 0
@@ -355,7 +358,7 @@ def train(hyp, opt, device, tb_writer=None):
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start) # 训练开始经历的steps
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0 # non_blocking表示img的传输(cpu->GPU)启动后，立即转向下一行，无需等待传输完毕
-            print("batch中的img_size",imgs.size())
+            # print("batch中的img_size",imgs.size())
 
             # Warmup # 还在热启动阶段
             if ni <= nw:

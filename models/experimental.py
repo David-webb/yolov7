@@ -232,6 +232,12 @@ class End2End(nn.Module):
 
 
 
+def attempt_load_fms(weights, map_location=None):
+    """针对fms项目的模型裁剪：主要是head裁剪
+    """
+    pass
+
+
 
 
 def attempt_load(weights, map_location=None):
