@@ -803,6 +803,8 @@ def load_mosaic(self, index):
     # self.mosaic_border = [-img_size // 2, -img_size // 2] # (-160, -160)
     yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y # 均匀分布选择mosaic的中心点 均匀分布的范围uniform(160, 480)，即中心点的横纵坐标值都在（160,480）之间随机选择
     indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+    
+    print("============== load mosaic4 =================")
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index) # FMS: h = 240, w = 320
@@ -837,22 +839,32 @@ def load_mosaic(self, index):
 
         # Labels
         labels, segments = self.labels[index].copy(), self.segments[index].copy()
+        print("in mosaic4:,  labels:", labels.shape, "segmengs:", len(segments)) # segments的格式[np.array([[x,y],[x,y]]), np.array([[x,y],..], ..)]
         if labels.size:
             labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padw, padh)  # normalized xywh to pixel xyxy format # 这里的坐标已经转换到黑板上了
             segments = [xyn2xy(x, w, h, padw, padh) for x in segments]
         labels4.append(labels)
-        segments4.extend(segments)
-
+        # ========== 这里的segment为空的时候需要append进行占位 ====
+        # segments4.extend(segments)
+        if segments:
+            segments4.extend(segments)
+        else:
+            segments4.append(np.array(segments))
+    
     # Concat/clip labels
     labels4 = np.concatenate(labels4, 0)
     for x in (labels4[:, 1:], *segments4):
-        np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
+        if x.size:
+            np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
     # img4, labels4 = replicate(img4, labels4)  # replicate
 
     # Augment
     #img4, labels4, segments4 = remove_background(img4, labels4, segments4)
     #sample_segments(img4, labels4, segments4, probability=self.hyp['copy_paste'])
-    img4, labels4, segments4 = copy_paste(img4, labels4, segments4, probability=self.hyp['copy_paste']) # hyp['copy_paste']默认是0
+    print("in mosaic4, labels4:", labels4.shape, "segmengs4:", len(segments4))
+
+    img4, labels4, segments4 = copy_paste(img4, labels4, segments4, probability=self.hyp['copy_paste']) # hyp['copy_paste']默认是0 ,啥都不执行
+    # print("============== load mosaic4 =================")
     img4, labels4 = random_perspective(img4, labels4, segments4,
                                        degrees=self.hyp['degrees'],
                                        translate=self.hyp['translate'],
@@ -870,6 +882,7 @@ def load_mosaic9(self, index):
     labels9, segments9 = [], []
     s = self.img_size
     indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
+    print("============== load mosaic9 =================")
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
@@ -901,11 +914,16 @@ def load_mosaic9(self, index):
 
         # Labels
         labels, segments = self.labels[index].copy(), self.segments[index].copy()
+        print("in mosaic9:,  labels:", labels.shape, "segmengs:", len(segments)) # segments的格式[np.array([[x,y],[x,y]]), np.array([[x,y],..], ..)]
         if labels.size:
             labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padx, pady)  # normalized xywh to pixel xyxy format
             segments = [xyn2xy(x, w, h, padx, pady) for x in segments]
         labels9.append(labels)
-        segments9.extend(segments)
+        # segments9.extend(segments)
+        if segments:
+            segments9.extend(segments)
+        else:
+            segments9.append(np.array(segments))
 
         # Image
         img9[y1:y2, x1:x2] = img[y1 - pady:, x1 - padx:]  # img9[ymin:ymax, xmin:xmax]
@@ -920,15 +938,18 @@ def load_mosaic9(self, index):
     labels9[:, [1, 3]] -= xc
     labels9[:, [2, 4]] -= yc
     c = np.array([xc, yc])  # centers
-    segments9 = [x - c for x in segments9]
+    segments9 = [x - c if x.size else x for x in segments9]
 
     for x in (labels9[:, 1:], *segments9):
-        np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
+        if x.size:
+            np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
     # img9, labels9 = replicate(img9, labels9)  # replicate
 
     # Augment
     #img9, labels9, segments9 = remove_background(img9, labels9, segments9)
+    print("in mosaic9, labels4:", labels9.shape, "segmengs9:", len(segments9))
     img9, labels9, segments9 = copy_paste(img9, labels9, segments9, probability=self.hyp['copy_paste'])
+
     img9, labels9 = random_perspective(img9, labels9, segments9,
                                        degrees=self.hyp['degrees'],
                                        translate=self.hyp['translate'],
@@ -1180,24 +1201,56 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     # Transform label coordinates
     n = len(targets)
     if n:
-        use_segments = any(x.any() for x in segments)
+        use_segments = any(x.any() for x in segments) # 当前的4个（或9个）样本中是否有包含segment数据的样本
+        no_seg_samples = np.where(np.array([not x.any() for x in segments]))[0]
+        seg_idx = np.where(np.array([x.any() for x in segments]))
+        # print("筛选结果（x.any() for x in segments）:", [x.any() for x in segments] )
+        # print("use_segments的数据:", use_segments)
+        print("总长度：",n,  "检测到非segment数据：", no_seg_samples,)
+
         new = np.zeros((n, 4))
+        # ============ 原始代码 ================
         if use_segments:  # warp segments
             segments = resample_segments(segments)  # upsample
             for i, segment in enumerate(segments):
+                if 0 == segment.size:
+                    continue
                 xy = np.ones((len(segment), 3))
                 xy[:, :2] = segment
                 xy = xy @ M.T  # transform
                 xy = xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]  # perspective rescale or affine
 
                 # clip
-                new[i] = segment2box(xy, width, height)
+                try:
+                    print("debug: targets的长度为",n,"segments的长度为", len(segments), "当前的索引为:", i)
+                    new[i] = segment2box(xy, width, height)
+                except:
+                    assert False, "idx out of bound"
 
-        else:  # warp boxes
-            xy = np.ones((n * 4, 3))
-            xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+        if no_seg_samples.size:
+            m = no_seg_samples.size
+            xy = np.ones((m * 4, 3))
+            print("m:",m, "no_seg_samples:", no_seg_samples)
+            print("targets_size", targets.shape)
+            print("targets提取的no_seg数据: ", targets[no_seg_samples,:][:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(m * 4, 2))
+            xy[:, :2] = targets[no_seg_samples,:][:,[1, 2, 3, 4, 1, 4, 3, 2]].reshape(m * 4, 2)  # x1y1, x2y2, x1y2, x2y1 # bbox从左上开始逆时针方向的四个点坐标
             xy = xy @ M.T  # transform
-            xy = (xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]).reshape(n, 8)  # perspective rescale or affine
+            xy = (xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]).reshape(m, 8)  # perspective rescale or affine # perspective超参设置为0
+            x = xy[:, [0, 2, 4, 6]]
+            y = xy[:, [1, 3, 5, 7]]
+            new[no_seg_samples] = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, m).T
+
+            # clip
+            new[:, [0, 2]] = new[:, [0, 2]].clip(0, width)
+            new[:, [1, 3]] = new[:, [1, 3]].clip(0, height)
+
+        """原始代码
+            
+        # else:  # warp boxes: 同步bbox和图像同样的变换
+            xy = np.ones((n * 4, 3))
+            xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1 # bbox从左上开始逆时针方向的四个点坐标
+            xy = xy @ M.T  # transform
+            xy = (xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]).reshape(n, 8)  # perspective rescale or affine # perspective超参设置为0
 
             # create new boxes
             x = xy[:, [0, 2, 4, 6]]
@@ -1207,11 +1260,12 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
             # clip
             new[:, [0, 2]] = new[:, [0, 2]].clip(0, width)
             new[:, [1, 3]] = new[:, [1, 3]].clip(0, height)
+        """
 
         # filter candidates
-        i = box_candidates(box1=targets[:, 1:5].T * s, box2=new.T, area_thr=0.01 if use_segments else 0.10)
-        targets = targets[i]
-        targets[:, 1:5] = new[i]
+        j = box_candidates(box1=targets[:, 1:5].T * s, box2=new.T, area_thr=0.01 if use_segments else 0.10)
+        targets = targets[j]
+        targets[:, 1:5] = new[j]
 
     return img, targets
 
