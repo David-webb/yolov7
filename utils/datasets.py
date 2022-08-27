@@ -538,7 +538,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     nf += 1  # label found
                     with open(lb_file, 'r') as f:
                         l = [x.split() for x in f.read().strip().splitlines()]
-                        if any([len(x) > 8 for x in l]):  # is segment
+                        if any([len(x) > 8 for x in l]):  # is segment # 4个node坐标＋1个cls，9个数构成最小的seg
                             classes = np.array([x[0] for x in l], dtype=np.float32)
                             segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in l]  # (cls, xy1...)
                             l = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh) # segments2boxes 功能是根据seg中所有node的最小最大的横纵坐标确定bbox
@@ -641,7 +641,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1))
                 r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
                 img = (img * r + img2 * (1 - r)).astype(np.uint8)
-                labels = np.concatenate((labels, labels2), 0)
+                try:
+                    labels = np.concatenate((labels, labels2), 0)
+                except:
+                    assert False, ("wrong concat, labels shape is", labels.shape, "labels2 shape is:", labels2.shape)
 
         else:
             # Load image
@@ -804,7 +807,7 @@ def load_mosaic(self, index):
     yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y # 均匀分布选择mosaic的中心点 均匀分布的范围uniform(160, 480)，即中心点的横纵坐标值都在（160,480）之间随机选择
     indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
     
-    print("============== load mosaic4 =================")
+    # print("============== load mosaic4 =================")
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index) # FMS: h = 240, w = 320
@@ -839,7 +842,7 @@ def load_mosaic(self, index):
 
         # Labels
         labels, segments = self.labels[index].copy(), self.segments[index].copy()
-        print("in mosaic4:,  labels:", labels.shape, "segmengs:", len(segments)) # segments的格式[np.array([[x,y],[x,y]]), np.array([[x,y],..], ..)]
+        # print("in mosaic4:,  labels:", labels.shape, "segmengs:", len(segments)) # segments的格式[np.array([[x,y],[x,y]]), np.array([[x,y],..], ..)]
         if labels.size:
             labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padw, padh)  # normalized xywh to pixel xyxy format # 这里的坐标已经转换到黑板上了
             segments = [xyn2xy(x, w, h, padw, padh) for x in segments]
@@ -848,7 +851,7 @@ def load_mosaic(self, index):
         # segments4.extend(segments)
         if segments:
             segments4.extend(segments)
-        else:
+        elif labels.size: # 如果labels是空（下面concat就会被剔除），所以这里不需要对应的segment
             segments4.append(np.array(segments))
     
     # Concat/clip labels
@@ -861,7 +864,7 @@ def load_mosaic(self, index):
     # Augment
     #img4, labels4, segments4 = remove_background(img4, labels4, segments4)
     #sample_segments(img4, labels4, segments4, probability=self.hyp['copy_paste'])
-    print("in mosaic4, labels4:", labels4.shape, "segmengs4:", len(segments4))
+    # print("in mosaic4, labels4:", labels4.shape, "segmengs4:", len(segments4))
 
     img4, labels4, segments4 = copy_paste(img4, labels4, segments4, probability=self.hyp['copy_paste']) # hyp['copy_paste']默认是0 ,啥都不执行
     # print("============== load mosaic4 =================")
@@ -871,7 +874,7 @@ def load_mosaic(self, index):
                                        scale=self.hyp['scale'],
                                        shear=self.hyp['shear'],
                                        perspective=self.hyp['perspective'],
-                                       border=self.mosaic_border)  # border to remove
+                                       border=self.mosaic_border, mode="mosaic4")  # border to remove
 
     return img4, labels4
 
@@ -882,7 +885,7 @@ def load_mosaic9(self, index):
     labels9, segments9 = [], []
     s = self.img_size
     indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
-    print("============== load mosaic9 =================")
+    # print("============== load mosaic9 =================")
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
@@ -914,21 +917,24 @@ def load_mosaic9(self, index):
 
         # Labels
         labels, segments = self.labels[index].copy(), self.segments[index].copy()
-        print("in mosaic9:,  labels:", labels.shape, "segmengs:", len(segments)) # segments的格式[np.array([[x,y],[x,y]]), np.array([[x,y],..], ..)]
+        # assert len(segments) == labels.shape[0], "unmatch size of segments and labels in position 0. where segments length is %d and label length is %d" % (len(segments),labels.shape[0])
+        # print("in mosaic9:,  labels:", labels.shape, "segmengs:", len(segments)) # segments的格式[np.array([[x,y],[x,y]]), np.array([[x,y],..], ..)]
         if labels.size:
             labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padx, pady)  # normalized xywh to pixel xyxy format
             segments = [xyn2xy(x, w, h, padx, pady) for x in segments]
         labels9.append(labels)
+
         # segments9.extend(segments)
         if segments:
             segments9.extend(segments)
-        else:
+        elif labels.size:
             segments9.append(np.array(segments))
 
         # Image
         img9[y1:y2, x1:x2] = img[y1 - pady:, x1 - padx:]  # img9[ymin:ymax, xmin:xmax]
         hp, wp = h, w  # height, width previous
 
+    # assert len(segments9) == len(labels9), "unmatch size of segments and labels in position 0. where segments length is %d and label length is %d" % (len(segments9),len(labels9))
     # Offset
     yc, xc = [int(random.uniform(0, s)) for _ in self.mosaic_border]  # mosaic center x, y
     img9 = img9[yc:yc + 2 * s, xc:xc + 2 * s]
@@ -939,7 +945,7 @@ def load_mosaic9(self, index):
     labels9[:, [2, 4]] -= yc
     c = np.array([xc, yc])  # centers
     segments9 = [x - c if x.size else x for x in segments9]
-
+    assert len(segments9) == labels9.shape[0], ("unmatch size of segments and labels in position 1.where segments length is %d and label length is %d" % (len(segments9),labels9.shape[0]), "labels9:", labels9, "segments9",segments9)
     for x in (labels9[:, 1:], *segments9):
         if x.size:
             np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
@@ -947,16 +953,17 @@ def load_mosaic9(self, index):
 
     # Augment
     #img9, labels9, segments9 = remove_background(img9, labels9, segments9)
-    print("in mosaic9, labels4:", labels9.shape, "segmengs9:", len(segments9))
+    # print("in mosaic9, labels4:", labels9.shape, "segmengs9:", len(segments9))
     img9, labels9, segments9 = copy_paste(img9, labels9, segments9, probability=self.hyp['copy_paste'])
 
+    assert len(segments9) == labels9.shape[0], "unmatch size of segments and labels in position 2"
     img9, labels9 = random_perspective(img9, labels9, segments9,
                                        degrees=self.hyp['degrees'],
                                        translate=self.hyp['translate'],
                                        scale=self.hyp['scale'],
                                        shear=self.hyp['shear'],
                                        perspective=self.hyp['perspective'],
-                                       border=self.mosaic_border)  # border to remove
+                                       border=self.mosaic_border,mode="mosaic9")  # border to remove
 
     return img9, labels9
 
@@ -1136,7 +1143,7 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale
 
 
 def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
-                       border=(0, 0)):
+                       border=(0, 0), mode="none"):
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # targets = [cls, xyxy]
 
@@ -1203,10 +1210,10 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     if n:
         use_segments = any(x.any() for x in segments) # 当前的4个（或9个）样本中是否有包含segment数据的样本
         no_seg_samples = np.where(np.array([not x.any() for x in segments]))[0]
-        seg_idx = np.where(np.array([x.any() for x in segments]))
+        seg_idx = np.where(np.array([x.any() for x in segments]))[0]
         # print("筛选结果（x.any() for x in segments）:", [x.any() for x in segments] )
         # print("use_segments的数据:", use_segments)
-        print("总长度：",n,  "检测到非segment数据：", no_seg_samples,)
+        # print("总长度：",n,  "检测到非segment数据：", no_seg_samples,)
 
         new = np.zeros((n, 4))
         # ============ 原始代码 ================
@@ -1221,18 +1228,14 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
                 xy = xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]  # perspective rescale or affine
 
                 # clip
-                try:
-                    print("debug: targets的长度为",n,"segments的长度为", len(segments), "当前的索引为:", i)
-                    new[i] = segment2box(xy, width, height)
-                except:
-                    assert False, "idx out of bound"
+                new[i] = segment2box(xy, width, height)
 
         if no_seg_samples.size:
             m = no_seg_samples.size
             xy = np.ones((m * 4, 3))
-            print("m:",m, "no_seg_samples:", no_seg_samples)
-            print("targets_size", targets.shape)
-            print("targets提取的no_seg数据: ", targets[no_seg_samples,:][:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(m * 4, 2))
+            # print("m:",m, "no_seg_samples:", no_seg_samples)
+            # print("targets_size", targets.shape)
+            # print("targets提取的no_seg数据: ", targets[no_seg_samples,:][:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(m * 4, 2))
             xy[:, :2] = targets[no_seg_samples,:][:,[1, 2, 3, 4, 1, 4, 3, 2]].reshape(m * 4, 2)  # x1y1, x2y2, x1y2, x2y1 # bbox从左上开始逆时针方向的四个点坐标
             xy = xy @ M.T  # transform
             xy = (xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]).reshape(m, 8)  # perspective rescale or affine # perspective超参设置为0
@@ -1262,11 +1265,36 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
             new[:, [1, 3]] = new[:, [1, 3]].clip(0, height)
         """
 
-        # filter candidates
-        j = box_candidates(box1=targets[:, 1:5].T * s, box2=new.T, area_thr=0.01 if use_segments else 0.10)
-        targets = targets[j]
-        targets[:, 1:5] = new[j]
+        """原始代码
+            # filter candidates
+            j = box_candidates(box1=targets[:, 1:5].T * s, box2=new.T, area_thr=0.01 if use_segments else 0.10)
+            targets = targets[j]
+            targets[:, 1:5] = new[j]
+        """
+        # ================ filter candidates =====================
+        # filter no_seg_samples
+        if no_seg_samples.size:
+            j = box_candidates(box1=targets[no_seg_samples, 1:5].T * s, box2=new[no_seg_samples].T, area_thr=0.10)
+            targets_noseg = targets[no_seg_samples][j]
+            targets_noseg[:, 1:5] = new[no_seg_samples][j]
+        else:
+            targets_noseg = np.empty([0,5])
 
+        # filter seg_samples
+        if seg_idx.size:
+            j = box_candidates(box1=targets[seg_idx, 1:5].T * s, box2=new[seg_idx].T, area_thr=0.01)
+            targets_seg = targets[seg_idx][j]
+            targets_seg[:, 1:5] = new[seg_idx][j]
+        else:
+            targets_seg = np.empty([0,5])
+
+        if 0 == targets_noseg.size:
+            targets = targets_seg
+        elif 0 == targets_seg.size:
+            targets = targets_noseg
+        else:
+            targets = np.concatenate((targets_noseg, targets_seg), axis=0)
+            
     return img, targets
 
 
