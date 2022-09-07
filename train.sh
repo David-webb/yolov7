@@ -6,6 +6,7 @@
 # 融合训练
 #python -m torch.distributed.launch --nproc_per_node 4 --master_port 9528 train.py --workers 8 --device 4,5,6,7 --sync-bn --batch_size 128 --data data/fms.yaml --img 320 320 --cfg cfg/training/yolov7-tiny.yaml --weights '' --name yolov7-fms-test-v2 --hyp data/hyp.scratch.tiny.yaml # --resume 
 # review测试
-python -m torch.distributed.launch --nproc_per_node 4 --master_port 9528 train.py --workers 8 --device 0,1,2,3 --sync-bn --batch_size 128 --data data/fms.yaml --img 320 320 --cfg cfg/training/yolov7-tiny.yaml --weights '' --name yolov7-fms-test-review --hyp data/hyp.scratch.tiny.yaml # --resume 
+#python -m torch.distributed.launch --nproc_per_node 4 --master_port 9528 train.py --workers 8 --device 0,1,2,3 --sync-bn --batch_size 128 --data data/fms.yaml --img 320 320 --cfg cfg/training/yolov7-tiny.yaml --weights '' --name yolov7-fms-test-review --hyp data/hyp.scratch.tiny.yaml # --resume 
+python -m torch.distributed.launch --nproc_per_node 1 --master_port 9528 train.py --workers 1 --device 0,1 --sync-bn --batch_size 128 --data data/coco.yaml --img 320 320 --cfg cfg/training/yolov7-tiny.yaml --weights '' --name yolov7-fms-code-review --hyp data/hyp.scratch.tiny.yaml #--noautoanchor # --resume 
 # 单GPU训练
 #python train.py --workers 8 --device 0 --batch-size 32 --data data/fms.yaml --img 320 240 --cfg cfg/training/yolov7-tiny.yaml --weights runs/train/yolov7-coco32/weights/best.pt --name yolov7-fms-singlecls --hyp data/hyp.scratch.tiny.yaml

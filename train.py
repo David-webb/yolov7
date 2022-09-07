@@ -355,6 +355,7 @@ def train(hyp, opt, device, tb_writer=None):
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
+        # 注意这里pbar返回的每个item为(torch.from_numpy(img), labels_out, self.img_files[index], shape)
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start) # 训练开始经历的steps
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0 # non_blocking表示img的传输(cpu->GPU)启动后，立即转向下一行，无需等待传输完毕
@@ -381,10 +382,13 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Forward
             with amp.autocast(enabled=cuda):
-                pred = model(imgs)  # forward
-                if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
+                pred = model(imgs)  # forward # pred 是list, 装了3个head分支的预测结果，[torch.Size([128, 3, 40, 40, 85]), torch.Size([128, 3, 20, 20, 85]), torch.Size([128, 3, 10, 10, 85])] # 这里输入时320,320
+                if 'loss_ota' not in hyp or hyp['loss_ota'] == 1: # tiny: loss_ota等于1
+                    print("使用compute_loss_ota 作为损失函数")
+                    # print("pred.size", [p.size() for p in pred], targets.size())
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
                 else:
+                    print("使用compute_loss 作为损失函数")
                     loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode

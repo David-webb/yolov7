@@ -448,6 +448,7 @@ class ComputeLoss:
             setattr(self, k, getattr(det, k))
 
     def __call__(self, p, targets):  # predictions, targets, model
+        # print("在普通的Loss函数中===============================")
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
@@ -468,9 +469,8 @@ class ComputeLoss:
                 iou = bbox_iou(pbox.T, tbox[i], x1y1x2y2=False, CIoU=True)  # iou(prediction, target)
                 lbox += (1.0 - iou).mean()  # iou loss
 
-                # Objectness
+                # Objectness # self.gr = 1.0
                 tobj[b, a, gj, gi] = (1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
-
                 # Classification
                 if self.nc > 1:  # cls loss (only if multiple classes)
                     t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
@@ -531,6 +531,7 @@ class ComputeLoss:
                 l, m = ((gxi % 1. < g) & (gxi > 1.)).T
                 j = torch.stack((torch.ones_like(j), j, k, l, m))
                 t = t.repeat((5, 1, 1))[j]
+                #  j筛选后: [378, 2]  得到所有筛选后的网格的中心相对于这个要预测的真实框所在网格边界（左右上下边框）的偏移量
                 offsets = (torch.zeros_like(gxy)[None] + off[:, None])[j]
             else:
                 t = targets[0]
@@ -568,80 +569,101 @@ class ComputeLossOTA:
         self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
 
         # Focal loss
-        g = h['fl_gamma']  # focal loss gamma
+        g = h['fl_gamma']  # focal loss gamma # tiny中默认为False
         if g > 0:
             BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
-        self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
+        self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7 # 这里的det.nl=3. 故self.balance = [4.0, 1.0, 0.4], 
         self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
-        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, model.gr, h, autobalance
+        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, model.gr, h, autobalance # autobalance默认是False
         for k in 'na', 'nc', 'nl', 'anchors', 'stride':
             setattr(self, k, getattr(det, k))
 
     def __call__(self, p, targets, imgs):  # predictions, targets, model   
+        """
+        Args:
+            p: pred 是list, 装了3个head分支的预测结果，[torch.Size([128, 3, 40, 40, 85]), torch.Size([128, 3, 20, 20, 85]), torch.Size([128, 3, 10, 10, 85])]
+            targets: [-1, 6], 每个label的第0号元素是batch_idx(mini-batch的内部索引)，1~5号元素对应cls_idx, xywh # xywh都是相对于img的wh进行归一化的
+        """
+        # print("in loss OTA ========================")
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         bs, as_, gjs, gis, targets, anchors = self.build_targets(p, targets, imgs)
         pre_gen_gains = [torch.tensor(pp.shape, device=device)[[3, 2, 3, 2]] for pp in p] 
-    
 
         # Losses
+        # 分别计算每一个head-layer层的loss
         for i, pi in enumerate(p):  # layer index, layer predictions
-            b, a, gj, gi = bs[i], as_[i], gjs[i], gis[i]  # image, anchor, gridy, gridx
-            tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj
+            b, a, gj, gi = bs[i], as_[i], gjs[i], gis[i]  # image(mini-batch-idx), anchor, gridy, gridx
+            # print("pi.size()", pi.size()) # e.g. [128, 3, 40, 40, 85]
+            # print("pi[...,0].size", pi[...,0].size()) # e.g.[128, 3, 40, 40]
+            tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj # e.g.[128, 3, 40, 40]
 
             n = b.shape[0]  # number of targets
             if n:
-                ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
+                ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets # (-1, 85)
 
                 # Regression
                 grid = torch.stack([gi, gj], dim=1)
-                pxy = ps[:, :2].sigmoid() * 2. - 0.5
+                # 计算预测的bboxes
+                pxy = ps[:, :2].sigmoid() * 2. - 0.5 # 预测的中心点坐标(相对于grid左上角点的偏移)
                 #pxy = ps[:, :2].sigmoid() * 3. - 1.
-                pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i]
-                pbox = torch.cat((pxy, pwh), 1)  # predicted box
-                selected_tbox = targets[i][:, 2:6] * pre_gen_gains[i]
-                selected_tbox[:, :2] -= grid
+                pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i] # 预测的wh数值
+                pbox = torch.cat((pxy, pwh), 1)  # predicted box # (-1, 4)
+                # 计算targets-bboxes
+                selected_tbox = targets[i][:, 2:6] * pre_gen_gains[i] # pre_gen_gains是图片的尺寸
+                selected_tbox[:, :2] -= grid # target中心点相对于其所在的grid左上角点的偏移  # (-1, 4), 个数同pbox
+                # CIOU计算位置损失(bbox)
                 iou = bbox_iou(pbox.T, selected_tbox, x1y1x2y2=False, CIoU=True)  # iou(prediction, target)
                 lbox += (1.0 - iou).mean()  # iou loss
 
-                # Objectness
+                # Objectness # self.gr=1.0
                 tobj[b, a, gj, gi] = (1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
 
-                # Classification
+                # Classification:分类损失
                 selected_tcls = targets[i][:, 1].long()
                 if self.nc > 1:  # cls loss (only if multiple classes)
-                    t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
-                    t[range(n), selected_tcls] = self.cp
+                    # 简单的标签平滑
+                    t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets # (-1, 80), 同ps[:,5:]的shape. 元素全部为0.05
+                    t[range(n), selected_tcls] = self.cp # target的cls对应索引位置(one-hot位置)数值为0.95
                     lcls += self.BCEcls(ps[:, 5:], t)  # BCE
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
                 #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
-
+            # (置信度损失) # self.gr=1.0
             obji = self.BCEobj(pi[..., 4], tobj)
-            lobj += obji * self.balance[i]  # obj loss
-            if self.autobalance:
+            lobj += obji * self.balance[i]  # obj loss # self.balace=[4.0, 1.0, 0.4]
+            if self.autobalance: # 默认为False
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
 
-        if self.autobalance:
+        if self.autobalance: # 默认为False
             self.balance = [x / self.balance[self.ssi] for x in self.balance]
-        lbox *= self.hyp['box']
-        lobj *= self.hyp['obj']
-        lcls *= self.hyp['cls']
+        lbox *= self.hyp['box'] # tiny中的权重0.05
+        lobj *= self.hyp['obj'] # tiny: 1.0
+        lcls *= self.hyp['cls'] # tiny: 0.5
         bs = tobj.shape[0]  # batch size
 
         loss = lbox + lobj + lcls
         return loss * bs, torch.cat((lbox, lobj, lcls, loss)).detach()
 
     def build_targets(self, p, targets, imgs):
-        
-        #indices, anch = self.find_positive(p, targets)
+        """
+        Args:
+            p: pred 是list, 装了3个head分支的预测结果，[torch.Size([128, 3, 40, 40, 85]), torch.Size([128, 3, 20, 20, 85]), torch.Size([128, 3, 10, 10, 85])]
+            targets: [-1, 6], 每个label的第0号元素是batch_idx(mini-batch的内部索引)，1~5号元素对应cls_idx, xywh # xywh都是相对于img的wh进行归一化的
+        """ 
+        # indices, list, 长度为3，每个子项：(image_index(mini-batch内部索引)-1, anchor_index-[-1], grid_indices_x-[-1],grid_indices_y-[-1]) # grid_indices_x/y 保存的是每个target所在的grid的左上角的坐标 # image_index是mini-batch内部的索引
+        # anch: list, 长度3. 每个子项-(-1,2), 子项保存是每个target对应的anchor(就是yaml中设置的anchor)
         indices, anch = self.find_3_positive(p, targets)
+        #indices, anch = self.find_positive(p, targets)
         #indices, anch = self.find_4_positive(p, targets)
         #indices, anch = self.find_5_positive(p, targets)
         #indices, anch = self.find_9_positive(p, targets)
+
+
+        # print("targets[1]元素：", targets[:10, 1])
 
         matching_bs = [[] for pp in p]
         matching_as = [[] for pp in p]
@@ -651,17 +673,16 @@ class ComputeLossOTA:
         matching_anchs = [[] for pp in p]
         
         nl = len(p)    
-    
         for batch_idx in range(p[0].shape[0]):
-        
-            b_idx = targets[:, 0]==batch_idx
+            # ====================== 提取mini-batch中当前图片的target数据 =======================
+            b_idx = targets[:, 0]==batch_idx # 提取当前batch_idx的数据
             this_target = targets[b_idx]
             if this_target.shape[0] == 0:
-                continue
-                
-            txywh = this_target[:, 2:6] * imgs[batch_idx].shape[1]
-            txyxy = xywh2xyxy(txywh)
+                continue 
+            txywh = this_target[:, 2:6] * imgs[batch_idx].shape[1] # 将targets中的xywh恢复到原图尺寸
+            txyxy = xywh2xyxy(txywh) # 
 
+            # ================= 提取predition中当前mini-batch图片相关的预测结果(根据indices中的target对应的grid数据) =================
             pxyxys = []
             p_cls = []
             p_obj = []
@@ -673,98 +694,120 @@ class ComputeLossOTA:
             all_anch = []
             
             for i, pi in enumerate(p):
-                
-                b, a, gj, gi = indices[i]
+                # 提取predition中每个head-layer中与当前图片相关的预测结果
+                b, a, gj, gi = indices[i] # (image_index(mini_batch_idx)-1, anchor_index-[-1], grid_indices_y-[-1],grid_indices_x-[-1])
                 idx = (b == batch_idx)
                 b, a, gj, gi = b[idx], a[idx], gj[idx], gi[idx]                
-                all_b.append(b)
-                all_a.append(a)
-                all_gj.append(gj)
-                all_gi.append(gi)
-                all_anch.append(anch[i][idx])
+                all_b.append(b) # mini-batch-idx
+                all_a.append(a) # anchor_idx, 数值在[0,2]
+                all_gj.append(gj) # grid_y(高轴-h)
+                all_gi.append(gi) # grid_x(宽轴-w)
+                all_anch.append(anch[i][idx]) # 当前图片在head_layer[i]上相关的所有anchors # (-1, 2)
                 from_which_layer.append(torch.ones(size=(len(b),)) * i)
                 
-                fg_pred = pi[b, a, gj, gi]                
-                p_obj.append(fg_pred[:, 4:5])
-                p_cls.append(fg_pred[:, 5:])
+                # e.g. pi.size == [bz, 3, 40, 40, 85]
+                fg_pred = pi[b, a, gj, gi]       # (-1, 85)
+                p_obj.append(fg_pred[:, 4:5])   # 前景/背景的置信度 # (-1, 1)
+                p_cls.append(fg_pred[:, 5:])    # 80类的score  # (-1, 80)
                 
-                grid = torch.stack([gi, gj], dim=1)
+                grid = torch.stack([gi, gj], dim=1) # targets所在的grid的左上角坐标
+                # 将pred的结果(bbox)还原到原图 
                 pxy = (fg_pred[:, :2].sigmoid() * 2. - 0.5 + grid) * self.stride[i] #/ 8.
                 #pxy = (fg_pred[:, :2].sigmoid() * 3. - 1. + grid) * self.stride[i]
                 pwh = (fg_pred[:, 2:4].sigmoid() * 2) ** 2 * anch[i][idx] * self.stride[i] #/ 8.
                 pxywh = torch.cat([pxy, pwh], dim=-1)
-                pxyxy = xywh2xyxy(pxywh)
+                pxyxy = xywh2xyxy(pxywh) # 将pred中的xywh转成xyxy
                 pxyxys.append(pxyxy)
             
-            pxyxys = torch.cat(pxyxys, dim=0)
+            pxyxys = torch.cat(pxyxys, dim=0) # 当前图片上所有的预测出的bbox, (-1, 4)
+            # print("pxyxys:", pxyxys.size()) 
             if pxyxys.shape[0] == 0:
                 continue
-            p_obj = torch.cat(p_obj, dim=0)
-            p_cls = torch.cat(p_cls, dim=0)
-            from_which_layer = torch.cat(from_which_layer, dim=0)
-            all_b = torch.cat(all_b, dim=0)
-            all_a = torch.cat(all_a, dim=0)
-            all_gj = torch.cat(all_gj, dim=0)
-            all_gi = torch.cat(all_gi, dim=0)
-            all_anch = torch.cat(all_anch, dim=0)
+            p_obj = torch.cat(p_obj, dim=0) # (-1, 1)
+            p_cls = torch.cat(p_cls, dim=0) # (-1, 80)
+            from_which_layer = torch.cat(from_which_layer, dim=0) # layer_mask, (-1)
+            all_b = torch.cat(all_b, dim=0) # mini-batch-idx vector, (-1), 元素应该都一样
+            all_a = torch.cat(all_a, dim=0) # anchor_idx, (-1)
+            all_gj = torch.cat(all_gj, dim=0) # grid_y(高轴-h
+            all_gi = torch.cat(all_gi, dim=0) # grid_x(宽轴-w
+            all_anch = torch.cat(all_anch, dim=0) # 当前图片在head_layer[i]上相关的所有anchors # (-1, 2)
         
-            pair_wise_iou = box_iou(txyxy, pxyxys)
+            # print("txyxy:", txyxy.size()) # (-1, 4)
+            pair_wise_iou = box_iou(txyxy, pxyxys) # 计算targets-pred的bbox-iou(二维表)
+            # print("pair_wise_iou:", pair_wise_iou.size()) # (len(txyxy), len(pxyxys))
+            pair_wise_iou_loss = -torch.log(pair_wise_iou + 1e-8) # 为什么这里要计算iou的loss？答：simOTA策略
 
-            pair_wise_iou_loss = -torch.log(pair_wise_iou + 1e-8)
-
-            top_k, _ = torch.topk(pair_wise_iou, min(10, pair_wise_iou.shape[1]), dim=1)
-            dynamic_ks = torch.clamp(top_k.sum(1).int(), min=1)
-
+            # 选择与每个gt的iou值最大的前10个prediction # top_k shape 为 (len(txyxy), min(10, len(pxyxys)))
+            top_k, _ = torch.topk(pair_wise_iou, min(10, pair_wise_iou.shape[1]), dim=1) # 为啥top10? # simOTA策略, 可以选择[5,15]区间
+            # 将这top10 iou进行sum，就为当前gt的dynamic_k。dynamic_k最小取1。
+            dynamic_ks = torch.clamp(top_k.sum(1).int(), min=1) # (len(txyxy), )
+            # print("dynamic_ks size：", dynamic_ks.size(), dynamic_ks[0].item())
+            
+        
+            # gt的分类打分数据：one-hot编码
             gt_cls_per_image = (
                 F.one_hot(this_target[:, 1].to(torch.int64), self.nc)
                 .float()
                 .unsqueeze(1)
                 .repeat(1, pxyxys.shape[0], 1)
-            )
+            ) # (-1, len(pxyxys), 80)
+            # print("gt_cls_per_image的shape:", gt_cls_per_image.size()) 
 
-            num_gt = this_target.shape[0]
+            num_gt = this_target.shape[0] # 当前图片上的gt个数
+            # print("p_cls expand:", p_cls.float().unsqueeze(0).repeat(num_gt, 1, 1).size()) # (-1, num_gt, 80)
+            # print("p_obj expand:", p_obj.unsqueeze(0).repeat(num_gt, 1, 1).sigmoid_().size()) #  (-1, num_gt, 1)
+            # 预测数据pred中每个类别的score和前景/背景score相乘
+            # (-1, num_gt, 80) * (-1, num_gt, 1) = (-1, num_gt, 80)
             cls_preds_ = (
                 p_cls.float().unsqueeze(0).repeat(num_gt, 1, 1).sigmoid_()
                 * p_obj.unsqueeze(0).repeat(num_gt, 1, 1).sigmoid_()
-            )
-
+            ) 
+            # print("cls_preds:", cls_preds_.size())
             y = cls_preds_.sqrt_()
+
+            # 计算gt-pred的分类交叉上loss 
             pair_wise_cls_loss = F.binary_cross_entropy_with_logits(
                torch.log(y/(1-y)) , gt_cls_per_image, reduction="none"
-            ).sum(-1)
+            ).sum(-1) # (len(txyxy), len(pxyxys),)
             del cls_preds_
-        
+            
+            # cls-loss叠加bbox_iou_loss 
             cost = (
                 pair_wise_cls_loss
                 + 3.0 * pair_wise_iou_loss
-            )
+            ) # 二维表 (len(txyxy), len(pxyxys))
 
-            matching_matrix = torch.zeros_like(cost)
 
+            # 为当前图片的每个gt-box选择cost-loss最小的前dynamic_ks个样本作为正样本
+            matching_matrix = torch.zeros_like(cost) # mask, 记录被选中的pred预测框
             for gt_idx in range(num_gt):
                 _, pos_idx = torch.topk(
                     cost[gt_idx], k=dynamic_ks[gt_idx].item(), largest=False
                 )
                 matching_matrix[gt_idx][pos_idx] = 1.0
-
             del top_k, dynamic_ks
-            anchor_matching_gt = matching_matrix.sum(0)
+
+            # 去除同一个预测样本被多个gt匹配的情况(只保留与匹配到的第一个gt的匹配关系)
+            anchor_matching_gt = matching_matrix.sum(0) # 统计每个pred预测样本匹配gt的个数
             if (anchor_matching_gt > 1).sum() > 0:
                 _, cost_argmin = torch.min(cost[:, anchor_matching_gt > 1], dim=0)
                 matching_matrix[:, anchor_matching_gt > 1] *= 0.0
                 matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
-            fg_mask_inboxes = matching_matrix.sum(0) > 0.0
-            matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
+            fg_mask_inboxes = matching_matrix.sum(0) > 0.0 # 所有被当前图片使用到的pred-bbox索引
+            matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0) # 所有匹配成功的gt中序号的最大值
         
+            # 抽取pred-bbox对应的信息数据 
             from_which_layer = from_which_layer[fg_mask_inboxes]
             all_b = all_b[fg_mask_inboxes]
             all_a = all_a[fg_mask_inboxes]
             all_gj = all_gj[fg_mask_inboxes]
             all_gi = all_gi[fg_mask_inboxes]
             all_anch = all_anch[fg_mask_inboxes]
-        
+
+            # 抽取对应的gt数据
             this_target = this_target[matched_gt_inds]
         
+            # 按照head_layer分别封装单张图片的数据
             for i in range(nl):
                 layer_idx = from_which_layer == i
                 matching_bs[i].append(all_b[layer_idx])
@@ -773,7 +816,9 @@ class ComputeLossOTA:
                 matching_gis[i].append(all_gi[layer_idx])
                 matching_targets[i].append(this_target[layer_idx])
                 matching_anchs[i].append(all_anch[layer_idx])
+        
 
+        # 按照head_layer分别整合mini-batch中所有图片的数据
         for i in range(nl):
             if matching_targets[i] != []:
                 matching_bs[i] = torch.cat(matching_bs[i], dim=0)
@@ -793,56 +838,103 @@ class ComputeLossOTA:
         return matching_bs, matching_as, matching_gjs, matching_gis, matching_targets, matching_anchs           
 
     def find_3_positive(self, p, targets):
+        """
+        Args:
+            p: pred 是list, 装了3个head分支的预测结果，[torch.Size([128, 3, 40, 40, 85]), torch.Size([128, 3, 20, 20, 85]), torch.Size([128, 3, 10, 10, 85])]
+            targets: [-1, 6], 每个label的第0号元素是batch_idx(mini-batch的内部索引)，1~5号元素对应score, xywh # xywh都是相对于img的wh进行归一化的
+        Returns:
+            indices, list, 长度为3，每个子项：(image_index-1, anchor_index-[-1], grid_indices_y-[-1],grid_indices_x-[-1]) # image_index是img在mini-batch内部的索引
+            anch: list, 长度3. 每个子项-(-1,2)
+        """
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
-        na, nt = self.na, targets.shape[0]  # number of anchors, targets
+        na, nt = self.na, targets.shape[0]  # number of anchors(3个), targets
+        # print("in find_3_positive, targets shape:", targets.shape) # (nt, 6)
+
         indices, anch = [], []
         gain = torch.ones(7, device=targets.device).long()  # normalized to gridspace gain
-        ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)  # same as .repeat_interleave(nt)
-        targets = torch.cat((targets.repeat(na, 1, 1), ai[:, :, None]), 2)  # append anchor indices
+        ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)  # same as .repeat_interleave(nt) # ai.size (na, nt), as in (3, nt) # 二维表格，行号是anchors, 列号是targets
+        # print("in find_3_positive, ai.size is ", ai.size()) # 
+        targets = torch.cat((targets.repeat(na, 1, 1), ai[:, :, None]), 2)  # append anchor indices # (na,nt,7) 
+        # print("in find_3_positive, targets after repeating.", targets.size())
 
         g = 0.5  # bias
         off = torch.tensor([[0, 0],
                             [1, 0], [0, 1], [-1, 0], [0, -1],  # j,k,l,m
                             # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
-                            ], device=targets.device).float() * g  # offsets
+                            ], device=targets.device).float() * g  # offsets # (5,2)
+        # print(off)
 
         for i in range(self.nl):
-            anchors = self.anchors[i]
+            anchors = self.anchors[i] # (3,2) # yaml文件的anchors除以对应特征图的stride
+            # print("anchors[%d]" % i, anchors)
+
+            # for example,p[i].shape = [128, 3, 40, 40, 85], gain[2:6] = [40,40,40,40]
             gain[2:6] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
 
             # Match targets to anchors
-            t = targets * gain
+            # 这里的xywh在前处理中是用img的wh进行归一化的，这里的gain中存储的只是fea的wh, 还差stride倍
+            # 实际上这里得到的是特征图(grid)上的坐标信息
+            t = targets * gain # [na,nt,7] * [7] = [na,nt,7], 对于输出fea = (40, 40, 85)的head, 这里的gain=[1,1,40,40,40,40]
             if nt:
                 # Matches
-                r = t[:, :, 4:6] / anchors[:, None]  # wh ratio
-                j = torch.max(r, 1. / r).max(2)[0] < self.hyp['anchor_t']  # compare
+                # 注意，这里的anchors是使用特征图的尺寸进行归一化的，所以t/anchor，实际上是求解原图上目标的bboxwh尺寸和anchors的尺寸比值
+                r = t[:, :, 4:6] / anchors[:, None]  # wh ratio # [na, nt, 2] 
+                # print("r.shape", r.shape)
+                # 筛选规则：目标的bbox的wh和anchors的wh比值（以及anchors和目标bbox比值）最大值不超过hyp['anchor_t'](阈值是4)
+                j = torch.max(r, 1. / r).max(2)[0] < self.hyp['anchor_t']  # compare # tiny的anchor_t为4.0
                 # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n)=wh_iou(anchors(3,2), gwh(n,2))
-                t = t[j]  # filter
+                t = t[j]  # filter # 提取出符合条件的targets # (-1, 7) 
+                # print("t after filtering:", t.size())
 
                 # Offsets
-                gxy = t[:, 2:4]  # grid xy
-                gxi = gain[[2, 3]] - gxy  # inverse
-                j, k = ((gxy % 1. < g) & (gxy > 1.)).T
+                # 从当前格子的上下左右格子中找到2个离target中心最近的两个格子（可能周围的格子也预测到了高质量的样本 我们也要把这部分的预测信息加入正样本中）                
+                # # feature map上的原点在左上角 向右为x轴正坐标 向下为y轴正坐标
+                gxy = t[:, 2:4]  # grid xy # (-1, 2)
+                gxi = gain[[2, 3]] - gxy  # inverse # (40,40) - xy, 关于原点反转坐标
+                # 找出gxy中的坐标值在grid内部，
+                # 筛选中心坐标 距离当前grid_cell的左、上方偏移小于g=0.5 且 中心坐标必须大于1(坐标不能在边上 此时就没有4个格子了)
+                # j: [n] bool 如果是True表示当前target中心点所在的格子的左边格子也对该target进行回归(后续进行计算损失)
+                # k: [n] bool 如果是True表示当前target中心点所在的格子的上边格子也对该target进行回归(后续进行计算损失)
+                j, k = ((gxy % 1. < g) & (gxy > 1.)).T # python的取余操作可以针对浮点数，1.1 % 1.0 = 0.1
+		# 筛选中心坐标 距离当前grid_cell的右、下方偏移小于g=0.5 且 中心坐标必须大于1(坐标不能在边上 此时就没有4个格子了)
+                # l: [n] bool 如果是True表示当前target中心点所在的格子的右边格子也对该target进行回归(后续进行计算损失)
+                # m: [n] bool 如果是True表示当前target中心点所在的格子的下边格子也对该target进行回归(后续进行计算损失)
                 l, m = ((gxi % 1. < g) & (gxi > 1.)).T
+                # print(j.size(),k.size(),l.size(),m.size(),)
+                # j: [5, n]  torch.ones_like(j): 当前格子, 不需要筛选全是True  j, k, l, m: 左上右下格子的筛选结果
                 j = torch.stack((torch.ones_like(j), j, k, l, m))
-                t = t.repeat((5, 1, 1))[j]
-                offsets = (torch.zeros_like(gxy)[None] + off[:, None])[j]
+                # print(j.size(),)
+                # 得到筛选后所有格子的正样本 格子数<=3*n 都不在边上等号成立
+                # 怎么保证每个target最多只能找到2个额外的邻接grid? 答：按照上面的计算方法，将当前grid四等分，按照target中心点所在的位置来确定使用哪两个邻接grid, 例如，中心点在第二象限子区域，则使用左边和上边两个grid.
+                # # t: [n, 7] -> 复制5份target[5, n, 7]  分别对应当前格子和左上右下格子5个格子
+                # j: [5, n] + t: [5, n, 7] => t: [3n, 7] 理论上是小于等于3倍的n 当且仅当没有边界的格子等号成立
+                t = t.repeat((5, 1, 1))[j] # ()
+                # print(t.size())
+                # j筛选后: [num, 2] num<=3*n. 得到所有筛选后的网格的中心相对于这个要预测的真实框所在网格边界（左右上下边框）的偏移量
+                # print(torch.zeros_like(gxy)[None].size()) # (1, -1, 2)
+                # print(off[:,None].size()) # (5,1,2)
+                # print((torch.zeros_like(gxy)[None] + off[:, None]).size()) # (5,-1, 2)
+                offsets = (torch.zeros_like(gxy)[None] + off[:, None])[j] # ((1,-1,2) + (5,1,2))[j] #(num, 2) 
+                # print(offsets.size()) # (num, 2)
             else:
                 t = targets[0]
                 offsets = 0
 
             # Define
-            b, c = t[:, :2].long().T  # image, class
-            gxy = t[:, 2:4]  # grid xy
-            gwh = t[:, 4:6]  # grid wh
-            gij = (gxy - offsets).long()
+            b, c = t[:, :2].long().T  # image_index, class
+            gxy = t[:, 2:4]  # grid xy # target的xy
+            gwh = t[:, 4:6]  # grid wh # target的wh
+            gij = (gxy - offsets).long() # # 预测真实框的网格所在的左上角坐标(有左上右下的网格)
             gi, gj = gij.T  # grid xy indices
 
             # Append
             a = t[:, 6].long()  # anchor indices
-            indices.append((b, a, gj.clamp_(0, gain[3] - 1), gi.clamp_(0, gain[2] - 1)))  # image, anchor, grid indices
+            indices.append((b, a, gj.clamp_(0, gain[3] - 1), gi.clamp_(0, gain[2] - 1)))  # image_index, anchor_index, grid indices
+            # print(indices[0].size()) # (5,-1,2)
+            # print(anchors.size()) # (3,2)
+            # print(a[:])
+            # print(anchors[a].size()) # (-1,2)
             anch.append(anchors[a])  # anchors
-
         return indices, anch
     
 
