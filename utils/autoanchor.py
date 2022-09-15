@@ -55,10 +55,10 @@ def check_anchors(dataset, model, thr=4.0, imgsz=640):
 
     def metric(k):  # compute metric
         r = wh[:, None] / k[None] # (num_samples,1,2) / (1, 9, 2) = (num_samples, 9, 2)
-        # 每个sample的wh和9个anchors的wh比值，以及anchors和sample的wh比值(对于每对sample-anchor有2*2=4个比值）中的最小值
+        # 每个sample的wh和9个anchors的wh比值，以及anchors和sample的wh比值(对于每对sample-anchor有2*2=4个比值）中的最小值 # 理论上，比值越小，匹配度越高
         x = torch.min(r, 1. / r).min(2)[0]  # ratio metric # (num_samples, 9) 
         print(x.size())
-        # 9个anchors中比值最大的那个比值(宽高匹配度最好的那个)
+        # 9个anchors中比值最大的那个比值(误差的上限)
         best = x.max(1)[0]  # best_x # (num_samples,),  
         # 每个sample和9个anchors最小比值大于阈值的个数的平均值，就是平均每个sample有几个满足大于阈值的匹配anchors # (1)
         aat = (x > 1. / thr).float().sum(1).mean()  # anchors above threshold 

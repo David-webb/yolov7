@@ -794,7 +794,7 @@ class ComputeLossOTA:
                 matching_matrix[:, anchor_matching_gt > 1] *= 0.0
                 matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
             fg_mask_inboxes = matching_matrix.sum(0) > 0.0 # 所有被当前图片使用到的pred-bbox索引
-            matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0) # 所有匹配成功的gt中序号的最大值
+            matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0) # 所有匹配成功的gt的索引
         
             # 抽取pred-bbox对应的信息数据 
             from_which_layer = from_which_layer[fg_mask_inboxes]
@@ -838,7 +838,7 @@ class ComputeLossOTA:
         return matching_bs, matching_as, matching_gjs, matching_gis, matching_targets, matching_anchs           
 
     def find_3_positive(self, p, targets):
-        """
+        """按照横纵比筛选target, 并计算每个target的
         Args:
             p: pred 是list, 装了3个head分支的预测结果，[torch.Size([128, 3, 40, 40, 85]), torch.Size([128, 3, 20, 20, 85]), torch.Size([128, 3, 10, 10, 85])]
             targets: [-1, 6], 每个label的第0号元素是batch_idx(mini-batch的内部索引)，1~5号元素对应score, xywh # xywh都是相对于img的wh进行归一化的
@@ -858,6 +858,7 @@ class ComputeLossOTA:
         # print("in find_3_positive, targets after repeating.", targets.size())
 
         g = 0.5  # bias
+        # 这里要注意最后乘以了g, 实际的off = [[0, 0], [0.5, 0], [0, 0.5], [-0.5, 0], [0, -0.5]]
         off = torch.tensor([[0, 0],
                             [1, 0], [0, 1], [-1, 0], [0, -1],  # j,k,l,m
                             # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
@@ -889,7 +890,7 @@ class ComputeLossOTA:
                 # Offsets
                 # 从当前格子的上下左右格子中找到2个离target中心最近的两个格子（可能周围的格子也预测到了高质量的样本 我们也要把这部分的预测信息加入正样本中）                
                 # # feature map上的原点在左上角 向右为x轴正坐标 向下为y轴正坐标
-                gxy = t[:, 2:4]  # grid xy # (-1, 2)
+                gxy = t[:, 2:4]  # grid xy # (-1, 2) # 这是选中的target的中心点
                 gxi = gain[[2, 3]] - gxy  # inverse # (40,40) - xy, 关于原点反转坐标
                 # 找出gxy中的坐标值在grid内部，
                 # 筛选中心坐标 距离当前grid_cell的左、上方偏移小于g=0.5 且 中心坐标必须大于1(坐标不能在边上 此时就没有4个格子了)
@@ -924,7 +925,7 @@ class ComputeLossOTA:
             b, c = t[:, :2].long().T  # image_index, class
             gxy = t[:, 2:4]  # grid xy # target的xy
             gwh = t[:, 4:6]  # grid wh # target的wh
-            gij = (gxy - offsets).long() # # 预测真实框的网格所在的左上角坐标(有左上右下的网格)
+            gij = (gxy - offsets).long() # 注意这里使用.long取整了，所以是target中心点所在的grid的左上角坐标(存在左上右下的网格)
             gi, gj = gij.T  # grid xy indices
 
             # Append
@@ -1015,8 +1016,6 @@ class ComputeLossBinOTA:
 
                 pbox = torch.cat((px.unsqueeze(1), py.unsqueeze(1), pw.unsqueeze(1), ph.unsqueeze(1)), 1).to(device)  # predicted box
 
-                
-                
                 
                 iou = bbox_iou(pbox.T, selected_tbox, x1y1x2y2=False, CIoU=True)  # iou(prediction, target)
                 lbox += (1.0 - iou).mean()  # iou loss

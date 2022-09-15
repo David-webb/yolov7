@@ -100,6 +100,7 @@ def train(hyp, opt, device, tb_writer=None):
         model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
+        print("exclude is:", exclude)
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
@@ -122,7 +123,6 @@ def train(hyp, opt, device, tb_writer=None):
             print('freezing %s' % k)
             v.requires_grad = False
 
-    
     # ========================== Optimizer ===================================
     # 当total_batch_size小于nbs时，weight_decay会一定程度的放大，模型权重更新的幅度也会大一些，反之，幅度就会小一些。（weight_decay是一种防止过拟合的手段,本质是一个L2 penalty），简单说，小batch不可靠。
     nbs = 64  # nominal batch size # 名义上的（预设的）batch size
@@ -326,8 +326,9 @@ def train(hyp, opt, device, tb_writer=None):
                 f'Starting training for {epochs} epochs...')
     torch.save(model, wdir / 'init.pt')
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------
-        model.train()
 
+        # print("model的anchors", model.anchors)
+        model.train()
         # Update image weights (optional)
         # 默认False。不执行该分支
         if opt.image_weights:
@@ -384,11 +385,11 @@ def train(hyp, opt, device, tb_writer=None):
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward # pred 是list, 装了3个head分支的预测结果，[torch.Size([128, 3, 40, 40, 85]), torch.Size([128, 3, 20, 20, 85]), torch.Size([128, 3, 10, 10, 85])] # 这里输入时320,320
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1: # tiny: loss_ota等于1
-                    print("使用compute_loss_ota 作为损失函数")
+                    # print("使用compute_loss_ota 作为损失函数")
                     # print("pred.size", [p.size() for p in pred], targets.size())
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
                 else:
-                    print("使用compute_loss 作为损失函数")
+                    # print("使用compute_loss 作为损失函数")
                     loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
