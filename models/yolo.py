@@ -125,15 +125,33 @@ class IDetect_fms(nn.Module):
         self.im = nn.ModuleList(ImplicitM(self.no * self.na) for _ in ch) # 三个1*1卷积，对应三个head
 
     def forward(self, x):
+        """
+            77.m.0.weight torch.Size([255, 128, 1, 1])
+            77.m.0.bias torch.Size([255])
+            77.m.1.weight torch.Size([255, 256, 1, 1])
+            77.m.1.bias torch.Size([255])
+            77.m.2.weight torch.Size([255, 512, 1, 1])
+            77.m.2.bias torch.Size([255])
+            77.ia.0.implicit torch.Size([1, 128, 1, 1])
+            77.ia.1.implicit torch.Size([1, 256, 1, 1])
+            77.ia.2.implicit torch.Size([1, 512, 1, 1])
+            77.im.0.implicit torch.Size([1, 255, 1, 1])
+            77.im.1.implicit torch.Size([1, 255, 1, 1])
+            77.im.2.implicit torch.Size([1, 255, 1, 1])
+        """
         # x = x.copy()  # for profiling
         z = []  # inference output
         self.training |= self.export
         for i in range(self.nl):
             # print("head头部，第%d个fea的size:" % i, x[i].size())
-            x[i] = self.m[i](self.ia[i](x[i]))  # conv
-            x[i] = self.im[i](x[i])
-            bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+            # head的输入特征图: (bs, 128, 20, 20) 
+            # ia操作：(bs, 128, 20, 20) = (bs, 128, 20, 20) + (1, 128, 1, 1) # 广播操作,bias
+            # m操作：(bs, 255, 20, 20) = ((1, 255, 128, 1, 1) * (bs, 128, 1, 20, 20)).view(...)
+            # im操作：(bs, 255, 20, 20) = (bs, 255, 20, 20) + (1, 255, 1, 1) # bias
+            x[i] = self.m[i](self.ia[i](x[i]))  # conv # ia加噪声，m[i]标准卷积，得到out-dim, 
+            x[i] = self.im[i](x[i]) # im 是1*1卷积，out_dim -> out_dim
+            bs, _, ny, nx = x[i].shape  
+            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous() # x(bs,255,20,20) to x(bs,3,20,20,85)
 
             if not self.training:  # inference
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:

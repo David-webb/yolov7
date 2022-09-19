@@ -7,6 +7,7 @@ import os
 import random
 import shutil
 import time
+import json
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
@@ -376,6 +377,20 @@ def img2label_paths(img_paths):
     sa, sb = os.sep + 'images' + os.sep, os.sep + 'labels' + os.sep  # /images/, /labels/ substrings
     return ['txt'.join(x.replace(sa, sb, 1).rsplit(x.split('.')[-1], 1)) for x in img_paths]
 
+def build_projection(self):
+    """构建laydown pose和img_file之间的映射关系
+    """
+    layimgs_idx = []
+    with open("./FMS_data/getrest/layimgs.json", "r")as rd:
+        layimgs = json.loads(rd.read())
+    for i, imgfp in enumerate(self.img_files):
+        img_name = os.path.split(imgfp)[-1]
+        if img_name in layimgs:
+            layimgs_idx.append(i)
+        pass
+    print("layimgs 的总个数为：", len(layimgs_idx))
+    return layimgs_idx
+    pass
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
@@ -408,6 +423,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     raise Exception(f'{prefix}{p} does not exist')
             # 对f中的img_path排序，结果存储在self.img_files
             self.img_files = sorted([x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
+            self.layimgs_idx = build_projection(self)
+
             # print("*********** img的总数为: %d ************" % len(self.img_files))
             # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in img_formats])  # pathlib
             assert self.img_files, f'{prefix}No images found'
@@ -806,7 +823,8 @@ def load_mosaic(self, index):
     s = self.img_size # 对于FMS (320,320)
     # self.mosaic_border = [-img_size // 2, -img_size // 2] # (-160, -160)
     yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y # 均匀分布选择mosaic的中心点 均匀分布的范围uniform(160, 480)，即中心点的横纵坐标值都在（160,480）之间随机选择
-    indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+    # indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+    indices = [index] + random.choices(self.indices, k=1) + random.choices(self.layimgs_idx, k=2)  # 3 additional image indices
     
     # print("============== load mosaic4 =================")
     for i, index in enumerate(indices):
@@ -885,7 +903,8 @@ def load_mosaic9(self, index):
 
     labels9, segments9 = [], []
     s = self.img_size
-    indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
+    # indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
+    indices = [index] + random.choices(self.indices, k=4) + random.choices(self.layimgs_idx, k=4)  # 8 additional image indices
     # print("============== load mosaic9 =================")
     for i, index in enumerate(indices):
         # Load image

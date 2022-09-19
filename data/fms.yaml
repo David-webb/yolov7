@@ -10,11 +10,11 @@
 #train: ./FMS_data/train.txt  # 118287 images
 #val: ./FMS_data/val.txt # 5000 images
 # ============ 单独使用FMS的laydown数据微调 ===============
-train: ./FMS_data/getrest/train.txt  # 118287 images
-val: ./FMS_data/getrest/val.txt # 5000 images
+#train: ./FMS_data/getrest/train.txt  # 118287 images
+#val: ./FMS_data/getrest/val.txt # 5000 images
 # ============ 混合训练 ==========================
-#train: [./FMS_data/train.txt, ./coco/train2017.txt]  # 118287 images
-#val: [./FMS_data/val.txt, ./coco/val2017.txt] # 5000 images
+train: [./FMS_data/train.txt, ./coco/train2017.txt]  # 118287 images
+val: [./FMS_data/val.txt, ./coco/val2017.txt] # 5000 images
 #
 # number of classes
 nc: 80

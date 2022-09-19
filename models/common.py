@@ -453,7 +453,7 @@ class ImplicitM(nn.Module):
         nn.init.normal_(self.implicit, mean=self.mean, std=self.std)
 
     def forward(self, x):
-        return self.implicit * x
+        return self.implicit * x # 相当于1*1卷积
     
 ##### end of yolor #####
 

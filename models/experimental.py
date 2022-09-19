@@ -1,9 +1,10 @@
+import os
 import numpy as np
 import random
 import torch
 import torch.nn as nn
-
-from models.common import Conv, DWConv
+from models.experimental import *
+from models.common import Conv, DWConv, ImplicitM
 from utils.google_utils import attempt_download
 
 
@@ -237,7 +238,117 @@ def attempt_load_fms(weights, map_location=None):
     """
     pass
 
+def reload_head(weights, map_location=None):
+    """
+    参数路径：
+        77.m.0.weight torch.Size([255, 128, 1, 1])
+        77.m.0.bias torch.Size([255])
+        77.m.1.weight torch.Size([255, 256, 1, 1])
+        77.m.1.bias torch.Size([255])
+        77.m.2.weight torch.Size([255, 512, 1, 1])
+        77.m.2.bias torch.Size([255])
+        77.ia.0.implicit torch.Size([1, 128, 1, 1])
+        77.ia.1.implicit torch.Size([1, 256, 1, 1])
+        77.ia.2.implicit torch.Size([1, 512, 1, 1])
+        77.im.0.implicit torch.Size([1, 255, 1, 1])
+        77.im.1.implicit torch.Size([1, 255, 1, 1])
+        77.im.2.implicit torch.Size([1, 255, 1, 1])
 
+    结构路径：
+	取ckpt[77]: IDetect(
+          (m): ModuleList(
+            (0): Conv2d(128, 255, kernel_size=(1, 1), stride=(1, 1))
+            (1): Conv2d(256, 255, kernel_size=(1, 1), stride=(1, 1))
+            (2): Conv2d(512, 255, kernel_size=(1, 1), stride=(1, 1))
+          )
+          (ia): ModuleList(
+            (0): ImplicitA()
+            (1): ImplicitA()
+            (2): ImplicitA()
+          )
+          (im): ModuleList(
+            (0): ImplicitM()
+            (1): ImplicitM()
+            (2): ImplicitM()
+          )
+        )
+    """
+    # 构建保存路径
+    work_dir, pt_name  = os.path.split(weights) 
+    pt_name = pt_name.split(".")[0] + "_sim.pt"
+    pt_save = os.path.join(work_dir, pt_name)
+
+    w = weights
+    ckpt = torch.load(w, map_location=map_location)  # load
+
+    # ========================= 模板 =========================== 
+    # 加载模型参数
+    pmodel = ckpt['ema'].model.named_parameters()
+    # pmodel = ckpt['model'].named_parameters()
+    
+    sim_head = {}
+    for name, p in pmodel:
+        # print(name, p.size())
+        if '77' in name:
+            sim_head[name] = p
+
+    # print(pmodel.77)
+
+    # # 加载模型结构
+    # tmodel = ckpt['ema'].model
+    # # print("取ckpt[76]:",tmodel[77].m[0])
+    # print("取ckpt[77]:",tmodel[77].m)
+    # tmodel[77].m[0] = nn.Conv2d(128, 18, 1)
+    # print("取ckpt[76]:",tmodel[77].m[0].weight.size())
+
+    # tmodel[77].m[0].weight = torch.nn.Parameter(torch.ones((18,128,1,1)), requires_grad=False)
+    # print("取ckpt[76]:",tmodel[77].m[0].weight.size())
+    # ===========================================================
+    for i in range(3):
+        print((ckpt['ema'].model[77].m[i].weight).requires_grad)
+        print((ckpt['ema'].model[77].im[i].implicit).requires_grad)
+    # 修改head
+    ckpt['ema'].model[77].m[0] = nn.Conv2d(128,18,1)
+    ckpt['ema'].model[77].m[1] = nn.Conv2d(256,18,1)
+    ckpt['ema'].model[77].m[2] = nn.Conv2d(512,18,1)
+    ckpt['ema'].model[77].im[0] = ImplicitM(18) 
+    ckpt['ema'].model[77].im[1] = ImplicitM(18)
+    ckpt['ema'].model[77].im[2] = ImplicitM(18)
+
+    # 修改参数
+    # print(type(sim_head['77.m.0.weight'].view((3,85, 128, 1, 1))[:,:6,:,:,:]))
+    # print((sim_head['77.m.0.weight'].view((3,85, 128, 1, 1))[:,:6,:,:,:]).contiguous().view(18,128,1,1).size())
+    tmp_ = sim_head['77.m.0.weight'].view((3,85, 128, 1, 1))[:,:6,:,:,:].contiguous().view(18,128,1,1)
+    ckpt['ema'].model[77].m[0].weight = torch.nn.Parameter(tmp_, requires_grad=False)
+    tmp_ = sim_head['77.m.0.bias'].view((3,85))[:,:6].contiguous().view(18)
+    ckpt['ema'].model[77].m[0].bias = torch.nn.Parameter(tmp_, requires_grad=False)
+
+    tmp_ = sim_head['77.m.1.weight'].view((3,85, 256, 1, 1))[:,:6,:,:,:].contiguous().view(18,256,1,1)
+    ckpt['ema'].model[77].m[1].weight = torch.nn.Parameter(tmp_, requires_grad=False) 
+    tmp_ = sim_head['77.m.1.bias'].view((3,85))[:,:6].contiguous().view(18)
+    ckpt['ema'].model[77].m[1].bias = torch.nn.Parameter(tmp_, requires_grad=False)
+
+    tmp_ = sim_head['77.m.2.weight'].view((3,85,512, 1, 1))[:,:6,:,:,:].contiguous().view(18,512,1,1)
+    ckpt['ema'].model[77].m[2].weight = torch.nn.Parameter(tmp_, requires_grad=False)
+    tmp_ = sim_head['77.m.2.bias'].view((3,85))[:,:6].contiguous().view(18)
+    ckpt['ema'].model[77].m[2].bias = torch.nn.Parameter(tmp_, requires_grad=False) 
+
+    tmp_ = sim_head['77.im.0.implicit'].view((3,85))[:, :6].contiguous().view(18)
+    ckpt['ema'].model[77].im[0].implicit.weight = torch.nn.Parameter(tmp_, requires_grad=False)
+    tmp_ = sim_head['77.im.1.implicit'].view((3,85))[:, :6].contiguous().view(18)
+    ckpt['ema'].model[77].im[1].implicit.weight = torch.nn.Parameter(tmp_, requires_grad=False) 
+    tmp_ = sim_head['77.im.2.implicit'].view((3,85))[:, :6].contiguous().view(18)
+    ckpt['ema'].model[77].im[2].implicit.weight = torch.nn.Parameter(tmp_, requires_grad=False)
+    
+    ckpt['ema'].model = ckpt['ema'].model.half()
+    
+    # 成员变量参数修改
+    ckpt['ema'].yaml['nc'] = 1
+    ckpt['ema'].model[77].nc = 1
+    ckpt['ema'].model[77].no = 6
+    
+    torch.save(ckpt, pt_save)
+    pass
 
 
 def attempt_load(weights, map_location=None):
@@ -246,10 +357,27 @@ def attempt_load(weights, map_location=None):
     for w in weights if isinstance(weights, list) else [weights]:
         attempt_download(w)
         ckpt = torch.load(w, map_location=map_location)  # load
+        print("ckpt的keys:", ckpt.keys()) # ckpt的keys: dict_keys(['epoch', 'best_fitness', 'training_results', 'model', 'ema', 'updates', 'optimizer', 'wandb_id'])
         model.append(ckpt['ema' if ckpt.get('ema') else 'model'].float().fuse().eval())  # FP32 model
     
+    # # print(ckpt['model'])
+    # pmodel = dict(ckpt['ema'].model.named_parameters())
+    # for name, p in pmodel.items():
+        # print(name, p.size())
+    # print(pmodel["77.ia.0.implicit"].size())
+
+
+    # tmodel = ckpt['ema'].model
+    # # print("取ckpt[76]:",tmodel[77].m[0])
+    # print("取ckpt[77]:",tmodel[77])
+    # tmodel[77].m[0] = nn.Conv2d(128, 18, 1)
+    # print("取ckpt[76]:",tmodel[77])
+    # # print("取ckpt[76]:",tmodel[77].m[0].weight)
+    # # tmodel[77].m[0].weight = tmodel[77].m[0].weight
+
     # Compatibility updates
     for m in model.modules():
+        # print(m)
         if type(m) in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True  # pytorch 1.7.0 compatibility
         elif type(m) is nn.Upsample:
@@ -258,6 +386,8 @@ def attempt_load(weights, map_location=None):
             m._non_persistent_buffers_set = set()  # pytorch 1.6.0 compatibility
     
     if len(model) == 1:
+        # print(model[-1])
+        # print(model[-1]["IDetect"])
         return model[-1]  # return model
     else:
         print('Ensemble created with %s\n' % weights)
