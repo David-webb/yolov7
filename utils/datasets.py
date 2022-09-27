@@ -423,6 +423,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     raise Exception(f'{prefix}{p} does not exist')
             # 对f中的img_path排序，结果存储在self.img_files
             self.img_files = sorted([x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
+            # (针对FMS数据集)构建laydown pose和img_file之间的映射关系
             self.layimgs_idx = build_projection(self)
 
             # print("*********** img的总数为: %d ************" % len(self.img_files))
@@ -1142,6 +1143,7 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale
 
     # Compute padding
     ratio = r, r  # width, height ratios
+    # print("ratio is:", ratio)
     new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
     dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
     if auto:  # minimum rectangle
@@ -1195,7 +1197,7 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     R = np.eye(3)
     a = random.uniform(-degrees, degrees)
     # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-    s = random.uniform(1 - scale, 1.1 + scale)
+    s = random.uniform(1 - scale, 1.1 + scale) # tiny设置scale为0.5
     # s = 2 ** random.uniform(-scale, scale)
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 

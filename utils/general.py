@@ -608,13 +608,15 @@ def box_diou(box1, box2, eps: float = 1e-7):
 def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, multi_label=False,
                         labels=()):
     """Runs Non-Maximum Suppression (NMS) on inference results
+    Args:
+        prediction: shape is [bs, -1, channels], and channels = (bbox(4位),score(1位)，cls_score(cls个数)), e.g. as input is (320,240)->(320,256), pred here is(1, 5040, 85)
 
     Returns:
          list of detections, on (n,6) tensor per image [xyxy, conf, cls]
     """
-
+    
     nc = prediction.shape[2] - 5  # number of classes
-    xc = prediction[..., 4] > conf_thres  # candidates
+    xc = prediction[..., 4] > conf_thres  # candidates # (bs, 5040)
 
     # Settings
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
@@ -632,7 +634,7 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
         x = x[xc[xi]]  # confidence
 
-        # Cat apriori labels if autolabelling
+        # Cat apriori labels if autolabelling # False，不执行
         if labels and len(labels[xi]):
             l = labels[xi]
             v = torch.zeros((len(l), nc + 5), device=x.device)
@@ -652,11 +654,12 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
         else:
             x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
 
+        print("obj-score和cls-score最大值:", torch.max(x[:, 4])) # , torch.max(x[:,5:], dim=-1, keepdim=True)[0,:5]
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
         box = xywh2xyxy(x[:, :4])
 
         # Detections matrix nx6 (xyxy, conf, cls)
-        if multi_label:
+        if multi_label: # False. 每个anchor只有一个类别标签
             i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
             x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
         else:  # best class only
@@ -664,7 +667,7 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
             x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
 
         # Filter by class
-        if classes is not None:
+        if classes is not None: # 这里默认是None,不执行
             x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
 
         # Apply finite constraint
@@ -675,16 +678,19 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
         n = x.shape[0]  # number of boxes
         if not n:  # no boxes
             continue
-        elif n > max_nms:  # excess boxes
+        elif n > max_nms:  # excess boxes # 对于FMS数据而言，最多5040个anchors，所以不会超出max_nms
             x = x[x[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence
 
         # Batched NMS
-        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
-        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
+        # print("in nms, agnostic is:", agnostic) # agnostic默认为False
+        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes # agnostic默认是False, max_wh=4096
+        # print("in_nms, x[:,5:6] is", x[:, 5:6]) # (-1,1),FMS数据上，数值都为0，索引都为0，因为单帧中基本只有1个人，对应cls-idx为0
+        # print("in nms, c is ",c)
+        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores # 为啥要offset by class?
         i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
         if i.shape[0] > max_det:  # limit detections
-            i = i[:max_det]
-        if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
+            i = i[:max_det] # max_det = 300
+        if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean) # 默认为False，不执行
             # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
             iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
             weights = iou * scores[None]  # box weights

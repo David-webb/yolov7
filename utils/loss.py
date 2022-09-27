@@ -787,7 +787,7 @@ class ComputeLossOTA:
                 matching_matrix[gt_idx][pos_idx] = 1.0
             del top_k, dynamic_ks
 
-            # 去除同一个预测样本被多个gt匹配的情况(只保留与匹配到的第一个gt的匹配关系)
+            # 去除同一个预测样本被多个gt匹配的情况(只保留cost最小的对应gt的匹配关系)
             anchor_matching_gt = matching_matrix.sum(0) # 统计每个pred预测样本匹配gt的个数
             if (anchor_matching_gt > 1).sum() > 0:
                 _, cost_argmin = torch.min(cost[:, anchor_matching_gt > 1], dim=0)

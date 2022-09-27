@@ -76,7 +76,7 @@ def detect(save_img=False):
         img /= 255.0  # 0 - 255 to 0.0 - 1.0 # 归一化
         if img.ndimension() == 3:
             img = img.unsqueeze(0) # 构建batch维度(w,h,c) -> (batch, w, h ,c)
-
+        # print("before inference:", img.size())
         # Warmup
         if device.type != 'cpu' and (old_img_b != img.shape[0] or old_img_h != img.shape[2] or old_img_w != img.shape[3]):
             old_img_b = img.shape[0]
@@ -90,13 +90,24 @@ def detect(save_img=False):
         pred = model(img, augment=opt.augment)[0]
         t2 = time_synchronized()
 
+        # print(type(pred), pred.size())
         # Apply NMS
+        # print("opt.classes is:", opt.classes)
         pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+
         t3 = time_synchronized()
 
         # Apply Classifier
-        if classify:
+        if classify: # False
             pred = apply_classifier(pred, modelc, img, im0s)
+
+        # print(type(pred), isinstance(pred, list), len(pred))
+        # if isinstance(pred, list) or isinstance(pred, tuple):
+            # print(len(pred))
+        # elif isinstance(pred, torch.tensor):
+            # print("pred size:", pred.size())
+        # elif isinstance(pred, np.ndarray):
+            # print("pred shape:", pred.shape)
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image

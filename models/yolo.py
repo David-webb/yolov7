@@ -267,7 +267,7 @@ class IDetect(nn.Module):
         # x = x.copy()  # for profiling
         z = []  # inference output
         self.training |= self.export
-        for i in range(self.nl):
+        for i in range(self.nl): # 特征图顺序: 40*40, 20*20, 10*10
             # print("head头部，第%d个fea的size:" % i, x[i].size())
             x[i] = self.m[i](self.ia[i](x[i]))  # conv
             x[i] = self.im[i](x[i])
